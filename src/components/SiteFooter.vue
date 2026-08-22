@@ -1,3 +1,7 @@
+<script setup>
+const emit = defineEmits(['lookup'])
+</script>
+
 <template>
   <footer class="footer">
     <div class="container">
@@ -9,6 +13,7 @@
         <nav class="links">
           <a href="#features">功能</a>
           <a href="#faq">常見問題</a>
+          <button type="button" @click="emit('lookup')">找回授權／下載</button>
           <a href="mailto:support@mlevel.example">聯絡我們</a>
         </nav>
       </div>
@@ -41,6 +46,15 @@
 .links { display: flex; flex-wrap: wrap; gap: 22px; font-size: 14px; color: var(--muted); }
 .links a { text-decoration: none; }
 .links a:hover { color: var(--text); }
+.links button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.links button:hover { color: var(--text); }
 
 .disclaimer {
   margin-top: 32px;

@@ -66,3 +66,22 @@ export async function fetchOrder(orderId, token) {
 
   return data.order
 }
+
+/**
+ * 用 Email + 授權金鑰找回訂單。
+ * 付款回跳的網址關掉後，這是使用者自己拿回金鑰與下載連結的入口。
+ */
+export async function lookupLicense(payload) {
+  const response = await fetch(buildUrl('lookup'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok || !data.ok) {
+    throw new Error(data.error || `查詢授權失敗（HTTP ${response.status}）`)
+  }
+
+  return data
+}

@@ -1,3 +1,7 @@
+<script setup>
+const emit = defineEmits(['lookup'])
+</script>
+
 <template>
   <header class="header">
     <div class="container bar">
@@ -9,6 +13,7 @@
         <a href="#features">功能</a>
         <a href="#how">使用方式</a>
         <a href="#faq">常見問題</a>
+        <button type="button" @click="emit('lookup')">找回授權</button>
       </nav>
     </div>
   </header>
@@ -56,6 +61,16 @@
   transition: color .15s ease;
 }
 .nav a:hover { color: var(--text); }
+.nav button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: color .15s ease;
+}
+.nav button:hover { color: var(--text); }
 
 @media (max-width: 720px) {
   .nav { display: none; }

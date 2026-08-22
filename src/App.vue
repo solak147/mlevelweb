@@ -8,8 +8,10 @@ import FaqSection from './components/FaqSection.vue'
 import SiteFooter from './components/SiteFooter.vue'
 import CheckoutModal from './components/CheckoutModal.vue'
 import LicenseResult from './components/LicenseResult.vue'
+import LicenseLookup from './components/LicenseLookup.vue'
 
 const checkoutOpen = ref(false)
+const lookupOpen = ref(false)
 
 // 綠界付款後會導回 /?orderId=…&status=…&token=…（見 functions/index.js 的 /result）
 const readPaymentReturn = () => {
@@ -47,15 +49,16 @@ const closeResult = () => {
 </script>
 
 <template>
-  <SiteHeader />
+  <SiteHeader @lookup="lookupOpen = true" />
   <main>
     <HeroSection @buy="checkoutOpen = true" />
     <FeatureGrid />
     <HowItWorks />
     <FaqSection />
   </main>
-  <SiteFooter />
+  <SiteFooter @lookup="lookupOpen = true" />
   <CheckoutModal v-if="checkoutOpen" @close="checkoutOpen = false" />
+  <LicenseLookup v-if="lookupOpen" @close="lookupOpen = false" />
   <LicenseResult
     v-if="paymentReturn"
     :order-id="paymentReturn.orderId"

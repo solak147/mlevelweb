@@ -5,6 +5,9 @@ const KEY_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const KEY_GROUPS = 4;
 const KEY_GROUP_SIZE = 4;
 
+const KEY_LENGTH = KEY_GROUPS * KEY_GROUP_SIZE;
+const KEY_PATTERN = /^MLV-[A-Z0-9]{4}(?:-[A-Z0-9]{4}){3}$/;
+
 /**
  * 產生授權金鑰，格式為 MLV-XXXX-XXXX-XXXX-XXXX。
  * 用 randomInt（CSPRNG、無模數偏差）逐字挑選字元。
@@ -19,6 +22,31 @@ function generateLicenseKey() {
     groups.push(group);
   }
   return `MLV-${groups.join('-')}`;
+}
+
+/**
+ * 把使用者手動輸入的金鑰整理成標準格式：去掉空白與連字號、轉大寫，
+ * 缺少的 MLV- 前綴與分組補回去。整理不出合法格式時回傳空字串。
+ */
+function normalizeLicenseKey(value) {
+  let body = (typeof value === 'string' ? value : '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+  // 只有在長度剛好是「前綴 + 金鑰本體」時才把 MLV 當前綴拿掉，
+  // 避免把本體第一組真的以 MLV 開頭的金鑰誤切。
+  if (body.length === KEY_LENGTH + 3 && body.startsWith('MLV')) {
+    body = body.slice(3);
+  }
+  if (body.length !== KEY_LENGTH) {
+    return '';
+  }
+
+  const groups = [];
+  for (let i = 0; i < KEY_LENGTH; i += KEY_GROUP_SIZE) {
+    groups.push(body.slice(i, i + KEY_GROUP_SIZE));
+  }
+
+  const key = `MLV-${groups.join('-')}`;
+  return KEY_PATTERN.test(key) ? key : '';
 }
 
 /**
@@ -56,4 +84,5 @@ module.exports = {
   generateAccessToken,
   generateLicenseKey,
   maskEmail,
+  normalizeLicenseKey,
 };

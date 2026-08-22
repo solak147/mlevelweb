@@ -104,9 +104,13 @@ onUnmounted(() => {
         </dl>
 
         <a v-if="order.downloadUrl" class="download" :href="order.downloadUrl" rel="noopener">下載 MLevel</a>
-        <p v-else class="desc">下載連結尚未設定，請聯絡客服取得程式。</p>
+        <p v-else-if="order.licenseExpired" class="desc expired">授權已到期，重新購買後即可再次下載。</p>
+        <p v-else class="desc expired">下載連結尚未設定，請聯絡客服取得程式。</p>
 
-        <p class="note">請把金鑰保存好；首次啟動 MLevel 時輸入它即可完成啟用。</p>
+        <p class="note">
+          請把金鑰保存好；首次啟動 MLevel 時輸入它即可完成啟用。
+          之後隨時可以用「Email + 金鑰」在網站上的「找回授權」重新取得下載連結，下載到的一律是最新版。
+        </p>
       </template>
 
       <!-- 未完成 -->
@@ -248,5 +252,6 @@ h3 { margin: 10px 0 16px; font-size: 24px; }
   font-size: 13.5px;
 }
 
-.note { margin-top: 18px; font-size: 12.5px; color: #7c88a3; }
+.desc.expired { margin-top: 24px; }
+.note { margin-top: 18px; font-size: 12.5px; color: #7c88a3; line-height: 1.7; }
 </style>
