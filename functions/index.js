@@ -15,6 +15,9 @@ const {
   calcExpiresAt,
   generateAccessToken,
   generateLicenseKey,
+  generateSessionId,
+  hashDeviceId,
+  hashLicenseKey,
   maskEmail,
   normalizeLicenseKey,
 } = require('./license');
@@ -42,6 +45,29 @@ setGlobalOptions({
 });
 
 const ORDERS = 'mlevel_orders';
+const SESSIONS = 'mlevel_sessions';
+
+// ── 一把金鑰同時只能有一個人在用 ────────────────────────────────────────────
+//
+// 做法是「租約 + 心跳」而不是綁死裝置：桌面程式啟動時 /session/acquire 取得一張
+// 席位租約（sessionId），之後每 SESSION_HEARTBEAT_SECONDS 秒送一次 /session/heartbeat
+// 續租。超過 SESSION_LEASE_MS 沒有心跳就視為離線，席位自動釋放給下一個人。
+//
+// 這樣使用者可以自由換電腦（不必解綁），但同一時間只會有一個工作階段成立。
+//
+// 兩個數字是在「被佔用時要等多久」和「自己當機後要等多久才能重開」之間取捨：
+// 心跳 3 分鐘一次、10 分鐘沒消息才放掉 —— 正常的網路抖動不會被踢掉，
+// 真的當機最多等 10 分鐘。Firestore 寫入量約每人每天 480 筆，成本可忽略。
+const SESSION_HEARTBEAT_SECONDS = 180;
+const SESSION_LEASE_MS = 10 * 60 * 1000;
+// 心跳比這個間隔還密就不寫入（仍回 ok）。省成本，也順手擋掉狂打心跳的客戶端。
+const SESSION_HEARTBEAT_MIN_WRITE_MS = 30 * 1000;
+// 剛被強制接手的席位有一段冷卻時間，免得兩個人互踢來互踢去、變成勉強可用的共用。
+const SESSION_TAKEOVER_COOLDOWN_MS = 2 * 60 * 1000;
+
+// /verify 是舊版桌面程式的啟動檢查，它不佔席位。設成 true 之後 /verify 會要求使用者
+// 更新程式，這樣舊版就不能繞過「一次一人」的限制。等新版鋪開後再打開。
+const REQUIRE_SESSION = String(process.env.MLEVEL_REQUIRE_SESSION || '').trim().toLowerCase() === 'true';
 
 // 商品的權威售價（TWD）。/create 一律以此表計價，不採用前端傳入的 amount，
 // 避免有人自組 request 用 1 元換授權金鑰。調價時前端顯示的價格也要一起改
@@ -424,6 +450,37 @@ async function resolveStorageDownloadUrl(file, metadata) {
   };
 }
 
+/**
+ * 用授權金鑰找出對應的「已付款」訂單。/verify 與 /session/acquire 共用。
+ * licenseKey 是單欄位索引（Firestore 自動建），不需要複合索引。
+ */
+async function findPaidOrder(licenseKey) {
+  const matches = await db.collection(ORDERS).where('licenseKey', '==', licenseKey).limit(5).get();
+  return matches.docs.find((doc) => doc.data().status === 'paid') || null;
+}
+
+function daysLeftFrom(expiresAt) {
+  return expiresAt
+    ? Math.max(0, Math.ceil((expiresAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000)))
+    : null;
+}
+
+/**
+ * 告訴被擋下的人「正在哪台裝置使用中」時，只給前兩個字。
+ * 足以讓本人認出是自己的另一台電腦，又不會把完整電腦名稱交給拿到金鑰的其他人。
+ */
+function maskDeviceLabel(label) {
+  const value = typeof label === 'string' ? label.trim() : '';
+  if (!value) {
+    return '';
+  }
+  return value.length <= 2 ? `${value}***` : `${value.slice(0, 2)}***`;
+}
+
+function toDateOrNull(value) {
+  return value && typeof value.toDate === 'function' ? value.toDate() : null;
+}
+
 function readExpiresAt(data) {
   return data.licenseExpiresAt && typeof data.licenseExpiresAt.toDate === 'function'
     ? data.licenseExpiresAt.toDate()
@@ -478,6 +535,9 @@ exports.ecpayApi = onRequest(async (request, response) => {
           'GET /order',
           'POST /lookup',
           'POST /verify',
+          'POST /session/acquire',
+          'POST /session/heartbeat',
+          'POST /session/release',
           'GET /download',
         ],
       });
@@ -715,8 +775,19 @@ exports.ecpayApi = onRequest(async (request, response) => {
         return;
       }
 
-      const matches = await db.collection(ORDERS).where('licenseKey', '==', licenseKey).limit(5).get();
-      const hit = matches.docs.find((doc) => doc.data().status === 'paid');
+      // /verify 不佔席位，所以舊版程式可以拿同一把金鑰同時開好幾份。新版鋪開後
+      // 把 MLEVEL_REQUIRE_SESSION 設成 true，舊版就會被要求更新。
+      if (REQUIRE_SESSION) {
+        response.status(426).json({
+          ok: false,
+          valid: false,
+          reason: 'UPGRADE_REQUIRED',
+          error: '這個版本已停用，請下載最新版 MLevel 後再啟動。',
+        });
+        return;
+      }
+
+      const hit = await findPaidOrder(licenseKey);
 
       if (!hit) {
         response.status(404).json({
@@ -759,10 +830,235 @@ exports.ecpayApi = onRequest(async (request, response) => {
         reason: 'OK',
         licenseKey,
         expiresAt: expiresAt ? expiresAt.toISOString() : '',
-        daysLeft: expiresAt
-          ? Math.max(0, Math.ceil((expiresAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000)))
-          : null,
+        daysLeft: daysLeftFrom(expiresAt),
       });
+      return;
+    }
+
+    // 6-1. 取得席位租約。一把金鑰同時只有一張租約成立，所以「同一把金鑰一次只能一個人用」。
+    //      桌面程式啟動時打這支，拿到 sessionId 後要定期送 /session/heartbeat 續租。
+    if (request.method === 'POST' && path === '/session/acquire') {
+      const body = request.body || {};
+      const licenseKey = normalizeLicenseKey(body.licenseKey);
+      const deviceId = typeof body.deviceId === 'string' ? body.deviceId.trim().slice(0, 200) : '';
+      const deviceLabel = typeof body.deviceLabel === 'string' ? body.deviceLabel.trim().slice(0, 60) : '';
+      // 使用者在「正在其他裝置使用中」的畫面按下「在這台裝置使用」時才帶 true
+      const force = body.force === true;
+
+      if (!licenseKey) {
+        response.status(400).json({
+          ok: false, valid: false, reason: 'INVALID_FORMAT',
+          error: '金鑰格式不正確，應為 MLV-XXXX-XXXX-XXXX-XXXX。',
+        });
+        return;
+      }
+      if (!deviceId) {
+        response.status(400).json({
+          ok: false, valid: false, reason: 'MISSING_DEVICE_ID',
+          error: '缺少裝置識別碼。',
+        });
+        return;
+      }
+
+      const clientIp = getClientIp(request);
+      if (tooManyVerifies(clientIp)) {
+        logger.warn('Session acquire rate limited', { ip: clientIp });
+        response.status(429).json({
+          ok: false, valid: false, reason: 'RATE_LIMITED',
+          error: '嘗試次數過多，請一分鐘後再試。',
+        });
+        return;
+      }
+
+      const orderDoc = await findPaidOrder(licenseKey);
+      if (!orderDoc) {
+        response.status(404).json({
+          ok: false, valid: false, reason: 'NOT_FOUND',
+          error: '查不到這組授權金鑰。',
+        });
+        return;
+      }
+
+      const order = orderDoc.data();
+      const expiresAt = readExpiresAt(order);
+      if (expiresAt && expiresAt.getTime() <= Date.now()) {
+        response.status(403).json({
+          ok: true, valid: false, reason: 'EXPIRED',
+          expiresAt: expiresAt.toISOString(),
+          error: '授權已到期，重新購買後即可繼續使用。',
+        });
+        return;
+      }
+
+      const deviceHash = hashDeviceId(deviceId);
+      const sessionRef = db.collection(SESSIONS).doc(hashLicenseKey(licenseKey));
+
+      // 用交易搶席位：兩台電腦同時啟動時，只有一邊會成功
+      const outcome = await db.runTransaction(async (tx) => {
+        const snapshot = await tx.get(sessionRef);
+        const current = snapshot.exists ? snapshot.data() : null;
+        const now = Date.now();
+
+        const lastSeen = toDateOrNull(current && current.lastSeenAt);
+        // 沒有心跳紀錄的席位（例如寫入到一半失敗）不該永久卡住，一律視為過期
+        const alive = Boolean(current && lastSeen && now - lastSeen.getTime() < SESSION_LEASE_MS);
+        const sameDevice = Boolean(current && current.deviceHash === deviceHash);
+
+        if (alive && !sameDevice) {
+          const takenOverAt = toDateOrNull(current.takenOverAt);
+          const coolingUntil = takenOverAt ? takenOverAt.getTime() + SESSION_TAKEOVER_COOLDOWN_MS : 0;
+          const cooling = coolingUntil > now;
+
+          if (!force || cooling) {
+            return {
+              granted: false,
+              cooling,
+              deviceLabel: maskDeviceLabel(current.deviceLabel),
+              retryAfterSeconds: Math.ceil(
+                ((cooling ? coolingUntil : lastSeen.getTime() + SESSION_LEASE_MS) - now) / 1000,
+              ),
+            };
+          }
+        }
+
+        // 同一台裝置重開也會拿到新的 sessionId —— 舊的那張租約就此失效，
+        // 所以當機後重開不必等租約到期。
+        const sessionId = generateSessionId();
+        const tookOver = alive && !sameDevice;
+
+        tx.set(sessionRef, {
+          orderId: order.orderId || orderDoc.id,
+          sessionId,
+          deviceHash,
+          deviceLabel,
+          startedAt: admin.firestore.FieldValue.serverTimestamp(),
+          lastSeenAt: admin.firestore.FieldValue.serverTimestamp(),
+          // 心跳只需要這份非正規化的到期時間，不用再回頭查訂單
+          licenseExpiresAt: expiresAt ? admin.firestore.Timestamp.fromDate(expiresAt) : null,
+          takenOverAt: tookOver ? admin.firestore.FieldValue.serverTimestamp() : null,
+        });
+
+        return { granted: true, sessionId, tookOver };
+      });
+
+      if (!outcome.granted) {
+        logger.info('Session acquire refused', { orderId: order.orderId, cooling: outcome.cooling });
+        response.status(409).json({
+          ok: false,
+          valid: false,
+          reason: outcome.cooling ? 'TAKEOVER_COOLDOWN' : 'IN_USE',
+          retryAfterSeconds: outcome.retryAfterSeconds,
+          activeDeviceLabel: outcome.deviceLabel,
+          error: outcome.cooling
+            ? '這組金鑰剛才才在別的裝置上啟動，請稍後再試。'
+            : '這組金鑰正在其他裝置使用中。關掉那一邊，或選擇「在這台裝置使用」接手。',
+        });
+        return;
+      }
+
+      logger.info('Session granted', { orderId: order.orderId, tookOver: outcome.tookOver });
+      response.status(200).json({
+        ok: true,
+        valid: true,
+        reason: 'OK',
+        sessionId: outcome.sessionId,
+        // 接手成功時前端可以提示「已從其他裝置接手」
+        tookOver: outcome.tookOver,
+        heartbeatSeconds: SESSION_HEARTBEAT_SECONDS,
+        leaseSeconds: Math.floor(SESSION_LEASE_MS / 1000),
+        expiresAt: expiresAt ? expiresAt.toISOString() : '',
+        daysLeft: daysLeftFrom(expiresAt),
+      });
+      return;
+    }
+
+    // 6-2. 續租。桌面程式每 heartbeatSeconds 秒打一次；
+    //      回 409 就代表席位已經被別人接手，程式應該停下來。
+    if (request.method === 'POST' && path === '/session/heartbeat') {
+      const body = request.body || {};
+      const licenseKey = normalizeLicenseKey(body.licenseKey);
+      const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
+
+      if (!licenseKey || !sessionId) {
+        response.status(400).json({
+          ok: false, valid: false, reason: 'INVALID_REQUEST',
+          error: '缺少金鑰或工作階段憑證。',
+        });
+        return;
+      }
+
+      // 心跳不做 IP 次數限制：網咖／宿舍會共用出口 IP，一限就把正常使用者擋死。
+      // 改成靠下面的 SESSION_HEARTBEAT_MIN_WRITE_MS 節流，狂打也只是多幾次讀取。
+      const sessionRef = db.collection(SESSIONS).doc(hashLicenseKey(licenseKey));
+      const session = (await sessionRef.get()).data();
+
+      if (!session) {
+        response.status(409).json({
+          ok: false, valid: false, reason: 'SESSION_LOST',
+          error: '工作階段已失效，請重新啟動程式。',
+        });
+        return;
+      }
+      if (session.sessionId !== sessionId) {
+        response.status(409).json({
+          ok: false, valid: false, reason: 'SESSION_TAKEN_OVER',
+          error: '這組金鑰已在其他裝置啟動，這一邊已被停用。',
+        });
+        return;
+      }
+
+      const expiresAt = readExpiresAt(session);
+      if (expiresAt && expiresAt.getTime() <= Date.now()) {
+        response.status(403).json({
+          ok: true, valid: false, reason: 'EXPIRED',
+          expiresAt: expiresAt.toISOString(),
+          error: '授權已到期，重新購買後即可繼續使用。',
+        });
+        return;
+      }
+
+      // 節流：距離上次心跳太近就不寫，只回 ok
+      const lastSeen = toDateOrNull(session.lastSeenAt);
+      if (!lastSeen || Date.now() - lastSeen.getTime() >= SESSION_HEARTBEAT_MIN_WRITE_MS) {
+        await sessionRef.set(
+          { lastSeenAt: admin.firestore.FieldValue.serverTimestamp() },
+          { merge: true },
+        );
+      }
+
+      response.status(200).json({
+        ok: true,
+        valid: true,
+        reason: 'OK',
+        heartbeatSeconds: SESSION_HEARTBEAT_SECONDS,
+        expiresAt: expiresAt ? expiresAt.toISOString() : '',
+        daysLeft: daysLeftFrom(expiresAt),
+      });
+      return;
+    }
+
+    // 6-3. 正常關閉程式時主動釋放席位，下一個人就不用等租約到期。
+    //      拿不到回應也沒關係 —— 租約本來就會自己過期。
+    if (request.method === 'POST' && path === '/session/release') {
+      const body = request.body || {};
+      const licenseKey = normalizeLicenseKey(body.licenseKey);
+      const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
+
+      if (!licenseKey || !sessionId) {
+        response.status(400).json({ ok: false, error: '缺少金鑰或工作階段憑證。' });
+        return;
+      }
+
+      const sessionRef = db.collection(SESSIONS).doc(hashLicenseKey(licenseKey));
+      await db.runTransaction(async (tx) => {
+        const snapshot = await tx.get(sessionRef);
+        // 只有持有這張租約的人能釋放它，否則就變成「知道金鑰就能把別人踢下線」
+        if (snapshot.exists && snapshot.data().sessionId === sessionId) {
+          tx.delete(sessionRef);
+        }
+      });
+
+      response.status(200).json({ ok: true });
       return;
     }
 

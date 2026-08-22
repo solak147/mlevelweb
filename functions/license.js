@@ -1,4 +1,4 @@
-const { randomBytes, randomInt } = require('node:crypto');
+const { createHash, randomBytes, randomInt } = require('node:crypto');
 
 // 去掉容易看錯的字元（0/O、1/I/L），使用者要用手抄／複製都不易出錯
 const KEY_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -58,6 +58,31 @@ function generateAccessToken() {
 }
 
 /**
+ * 連線工作階段的憑證。心跳與釋放都要帶，
+ * 免得任何人只要知道金鑰就能把別人的工作階段踢掉。
+ */
+function generateSessionId() {
+  return randomBytes(24).toString('base64url');
+}
+
+/**
+ * 授權金鑰的雜湊，用來當工作階段文件的 document id。
+ * 直接拿金鑰當 id 會讓它出現在 Firestore Console、Cloud Logging 與各種路徑上；
+ * 雜湊過就不會，而要查的時候我們手上一定有金鑰，重算一次就對得上。
+ */
+function hashLicenseKey(licenseKey) {
+  return createHash('sha256').update(`mlevel-license:${licenseKey}`).digest('hex');
+}
+
+/**
+ * 裝置識別碼的雜湊。我們只需要判斷「是不是同一台」，
+ * 不需要留下原始的機器碼，所以只存雜湊。
+ */
+function hashDeviceId(deviceId) {
+  return createHash('sha256').update(`mlevel-device:${deviceId}`).digest('hex');
+}
+
+/**
  * 授權有效期限：自付款起算 30 天。
  */
 function calcExpiresAt(paidAtMs, days = 30) {
@@ -83,6 +108,9 @@ module.exports = {
   calcExpiresAt,
   generateAccessToken,
   generateLicenseKey,
+  generateSessionId,
+  hashDeviceId,
+  hashLicenseKey,
   maskEmail,
   normalizeLicenseKey,
 };

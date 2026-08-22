@@ -4,7 +4,7 @@
 
 - 前端：Vue 3 + Vite（`src/`）
 - 後端：Firebase Cloud Functions（`functions/`，Node 22，部署在 `asia-east1`）
-- 資料：Firestore `mlevel_orders` collection
+- 資料：Firestore `mlevel_orders`（訂單與授權）、`mlevel_sessions`（席位租約）
 - 部署：Firebase Hosting
 
 Firebase 專案為 **`mlevel-f575a`**（見 `.firebaserc`），前端設定寫在 `src/firebase.js`。
@@ -102,6 +102,63 @@ Storage 上找不到物件時，若 `MLEVEL_DOWNLOAD_URL` 有設定會轉址過�
 授權也還沒到期就先放行（別讓後端維護把付了錢的人關在門外）。500 或非 JSON 的回應一律
 當成「問不到」而不是「金鑰無效」，同理。
 
+### 一次只能一個人使用（席位租約）
+
+同一把金鑰同時只會有**一個**工作階段成立。做法是「租約 + 心跳」，而不是把金鑰綁死在某台電腦上
+—— 使用者可以自由換電腦、重裝系統，不必來要解綁。
+
+三支端點（都不需要 App Check，桌面程式帶不了）：
+
+| 端點 | body | 用途 |
+| --- | --- | --- |
+| `POST /session/acquire` | `{ licenseKey, deviceId, deviceLabel?, force? }` | 啟動時取得席位 |
+| `POST /session/heartbeat` | `{ licenseKey, sessionId }` | 每 `heartbeatSeconds` 秒續租 |
+| `POST /session/release` | `{ licenseKey, sessionId }` | 正常關閉時釋放席位 |
+
+`acquire` 成功回 `{ ok:true, valid:true, sessionId, tookOver, heartbeatSeconds, leaseSeconds, expiresAt, daysLeft }`。
+`sessionId` 是這張租約的憑證，**心跳與釋放都要帶**，所以光知道金鑰不能把別人踢下線。
+
+`reason` 一覽：
+
+- `OK` — 拿到席位。`tookOver: true` 表示是從別的裝置接手來的，可以提示使用者。
+- `IN_USE`（409）— 別的裝置正在用。附 `retryAfterSeconds` 與遮罩過的 `activeDeviceLabel`
+  （只給前兩個字，本人認得出是自己另一台，但不會把完整電腦名交給其他拿到金鑰的人）。
+  想接手就重打一次並帶 `force: true`。
+- `TAKEOVER_COOLDOWN`（409）— 剛剛才有人接手過，2 分鐘內不能再搶。避免兩個人互踢來互踢去
+  把共用變成勉強可用。
+- `SESSION_TAKEN_OVER`（409，心跳）— 席位已被別的裝置接手，**這一邊要停止運作**。
+- `SESSION_LOST`（409，心跳）— 租約不見了（例如被釋放過），重新 `acquire` 即可。
+- `EXPIRED` / `NOT_FOUND` / `INVALID_FORMAT` / `MISSING_DEVICE_ID` / `RATE_LIMITED` — 同 `/verify`。
+
+參數（`functions/index.js` 上方）：心跳 **180 秒**一次、租約 **600 秒**沒消息才釋放。
+這是在「被佔用時要等多久」與「自己當機後要等多久才能重開」之間取捨：正常網路抖動不會被踢掉，
+真的當機最多等 10 分鐘。同一台裝置重開會直接換發新 `sessionId`，所以**當機重開不必等租約到期**。
+心跳距上一次不到 30 秒就不寫 Firestore（只回 `ok`），寫入量約每人每天 480 筆。
+
+搶席位是在 Firestore transaction 裡做的，兩台電腦同時啟動只有一邊會成功。
+
+#### 程式端要改的地方
+
+1. 啟動時把 `/verify` 換成 `/session/acquire`，並帶一個穩定的 `deviceId`
+   （Windows 上用 `MachineGuid` 或主機板序號的雜湊；後端只存它的 SHA-256，不留原始值）。
+2. 背景每 `heartbeatSeconds` 秒送一次心跳。**收到 409 就要真的停下來**，不然這個限制等於沒做。
+3. 正常關閉時打一次 `/session/release`，下一個人就不必等 10 分鐘。失敗也不用重試，租約本來會過期。
+4. ⚠️ **離線寬限期要重新想。** 目前 `license_gate.py` 在連不上後端時，只要上次驗證成功還在 3 天內
+   就放行 —— 套到席位上就變成「把程式擋在防火牆外就能無限同時使用」。建議改成：心跳連續失敗
+   最多容忍 30 分鐘（讓後端維護、短暫斷線不會中斷掛機），超過就停。這個數字直接決定限制的強度。
+
+#### 舊版怎麼收尾
+
+`/verify` 維持原樣（不佔席位），所以既有安裝不會被弄壞 —— 但舊版可以拿同一把金鑰同時開好幾份，
+**新版鋪開前這個限制是形同沒有的**。等新版上線一段時間後，把 `functions/.env` 的
+`MLEVEL_REQUIRE_SESSION` 設成 `true`，`/verify` 就會回 426 `UPGRADE_REQUIRED`
+要求使用者更新，舊版就再也繞不過去。
+
+#### 這個做法擋不住什麼
+
+擋的是「同時」，不是「分時」：兩個人講好輪流用（一人白天一人晚上）仍然做得到，只是不能同時掛機。
+要連分時也擋，就得回到裝置綁定（綁定 N 台、換機要解綁），代價是正常使用者換電腦要來找客服。
+
 ### 授權金鑰
 格式 `MLV-XXXX-XXXX-XXXX-XXXX`（去掉 0/O/1/I/L 等易混淆字元），以 CSPRNG 產生，自付款起算 30 天（`functions/license.js` 的 `calcExpiresAt`）。發放寫在 Firestore transaction 裡，`/notify` 與 `/result` 重複觸發也只會發一組。
 
@@ -110,8 +167,8 @@ Storage 上找不到物件時，若 `MLEVEL_DOWNLOAD_URL` 有設定會轉址過�
 | 檔案 | 用途 |
 | --- | --- |
 | `functions/ecpay.js` | CheckMacValue 計算／驗證、AIO 訂單參數組裝 |
-| `functions/license.js` | 授權金鑰、存取權杖、到期日、email 遮罩 |
-| `functions/index.js` | `ecpayApi` 的 `/create` `/notify` `/result` `/order` `/lookup` `/verify` `/download` 路由 |
+| `functions/license.js` | 授權金鑰、存取權杖、席位憑證、金鑰／裝置雜湊、到期日、email 遮罩 |
+| `functions/index.js` | `ecpayApi` 的 `/create` `/notify` `/result` `/order` `/lookup` `/verify` `/session/*` `/download` 路由 |
 | `src/lib/ecpay.js` | 前端呼叫後端、動態表單 POST 導向綠界、查訂單 |
 | `src/components/CheckoutModal.vue` | 結帳視窗（收 email、送出付款） |
 | `src/components/LicenseResult.vue` | 付款回跳後顯示授權金鑰 |
@@ -124,7 +181,7 @@ Storage 上找不到物件時，若 `MLEVEL_DOWNLOAD_URL` 有設定會轉址過�
 App Check 用來讓後端分辨「請求真的是從這個網站發出來的」，擋掉自己組 request 去刷 `/create`、`/lookup` 的腳本。
 
 **只有瀏覽器會打的三支端點會驗**：`/create`、`/order`、`/lookup`。
-`/notify`、`/result`（綠界的伺服器與轉址）、`/verify`（桌面程式）、`/download`（使用者直接點連結開新頁）**一律不驗** —— 這些請求帶不了 App Check token，驗了只會把正常流程擋死。
+`/notify`、`/result`（綠界的伺服器與轉址）、`/verify` 與 `/session/*`（桌面程式）、`/download`（使用者直接點連結開新頁）**一律不驗** —— 這些請求帶不了 App Check token，驗了只會把正常流程擋死。
 
 前端在 `src/firebase.js` 用 reCAPTCHA Enterprise 初始化，`src/lib/ecpay.js` 每次 fetch 會帶上 `X-Firebase-AppCheck` 標頭；後端在 `functions/index.js` 用 Admin SDK 的 `admin.appCheck().verifyToken()` 驗。
 
@@ -149,5 +206,6 @@ App Check 用來讓後端分辨「請求真的是從這個網站發出來的」�
 - 只要 `ECPAY_API_URL` 指向正式結帳網址，`getEcpayConfig()` 就會要求特店金鑰必填、且拒絕綠界公開的測試金鑰，避免用公開金鑰跑正式流量（那等於任何人都能偽造付款回呼）。
 - 付款回呼只保留欄位白名單（`CALLBACK_FIELDS`）：卡號後四碼 `card4no` 留著給客服核對，前六碼 `card6no`（BIN）不寫進 Firestore、也不進 log。
 - 未預期的錯誤只把細節寫進 Cloud Logging，回給前端的是通用訊息加一組 trace id，不外洩內部路徑或設定名稱。
+- 一把金鑰同時只有一個席位（`mlevel_sessions` 的租約 + 心跳）。`sessionId` 是租約憑證，只知道金鑰無法把別人踢下線；席位文件的 id 是金鑰的 SHA-256，金鑰本身不會出現在 Firestore 路徑或 log 裡；裝置識別碼也只存雜湊。
 - App Check 驗的是「請求來自這個網站」，不是「這個人是誰」，所以它是**額外一層**：`/order` 與 `/download` 仍然要 `accessToken`、`/lookup` 與 `/verify` 仍然有 IP 次數上限，這些都沒有因為 App Check 而放寬。
 - 程式檔案不對外公開：Storage 物件不需要（也不該）設成公開，一律由 `/download` 驗過授權才串出去。

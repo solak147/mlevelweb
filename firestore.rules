@@ -1,6 +1,7 @@
 rules_version = '2';
 
-// mlevel_orders 內含授權金鑰與購買者 email，一律不開放前端直接讀寫；
+// mlevel_orders 內含授權金鑰與購買者 email；mlevel_sessions 內含席位租約憑證
+// （sessionId 一外流就能把別人踢下線）。兩者一律不開放前端直接讀寫，
 // 所有存取都經由 Cloud Functions（Admin SDK 會繞過這些規則）。
 service cloud.firestore {
   match /databases/{database}/documents {
