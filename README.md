@@ -15,6 +15,7 @@ Firebase 專案為 **`mlevel-f575a`**（見 `.firebaserc`），前端設定寫�
    `VITE_ECPAY_API_URL=https://asia-east1-mlevel-f575a.cloudfunctions.net/ecpayApi`（`.env` 不進版控，clone 後照 `.env.example` 補上）。
 2. **後端環境變數** — 複製 `functions/.env.example` 為 `functions/.env`，填入綠界特店資料與 Storage 設定。
 3. **Firestore 資料庫** — 到 Firebase Console 建立 Firestore（位置選 `asia-east1`），否則 `/create` 寫不進訂單。
+4. **App Check（選用但建議）** — 見下面的〈App Check〉，填 `.env` 的 `VITE_FIREBASE_APPCHECK_SITE_KEY`。留空也能正常運作。
 
 > 目前 `functions/.env` 留空時會使用**綠界官方公開測試特店**（MerchantID `2000132`、測試結帳網址 `payment-stage.ecpay.com.tw`），可以直接跑完整流程。正式上線前務必換成自己的 `ECPAY_MERCHANT_ID` / `ECPAY_HASH_KEY` / `ECPAY_HASH_IV`，並把 `ECPAY_API_URL` 改成正式網址 `https://payment.ecpay.com.tw/Cashier/AioCheckOut/V5`。
 
@@ -116,11 +117,34 @@ Storage 上找不到物件時，若 `MLEVEL_DOWNLOAD_URL` 有設定會轉址過�
 | `src/components/LicenseResult.vue` | 付款回跳後顯示授權金鑰 |
 | `src/components/LicenseLookup.vue` | 用 email + 金鑰找回授權與下載連結 |
 | `firestore.rules` | 前端一律不可讀寫訂單，只有 Functions（Admin SDK）能存取 |
-| `src/firebase.js` | 前端 Firebase App 設定；Analytics 暫時註解停用（含 `main.js` 的載入點） |
+| `src/firebase.js` | 前端 Firebase App 設定、App Check 初始化與 `getAppCheckHeaders()`；Analytics 暫時註解停用 |
+
+## App Check
+
+App Check 用來讓後端分辨「請求真的是從這個網站發出來的」，擋掉自己組 request 去刷 `/create`、`/lookup` 的腳本。
+
+**只有瀏覽器會打的三支端點會驗**：`/create`、`/order`、`/lookup`。
+`/notify`、`/result`（綠界的伺服器與轉址）、`/verify`（桌面程式）、`/download`（使用者直接點連結開新頁）**一律不驗** —— 這些請求帶不了 App Check token，驗了只會把正常流程擋死。
+
+前端在 `src/firebase.js` 用 reCAPTCHA Enterprise 初始化，`src/lib/ecpay.js` 每次 fetch 會帶上 `X-Firebase-AppCheck` 標頭；後端在 `functions/index.js` 用 Admin SDK 的 `admin.appCheck().verifyToken()` 驗。
+
+### 開通步驟
+
+1. Firebase Console → **App Check** → 註冊網頁 App，供應商選 **reCAPTCHA Enterprise**，拿到 site key。
+2. 把 site key 填進 `.env` 的 `VITE_FIREBASE_APPCHECK_SITE_KEY`，`npm run deploy:hosting`。
+3. 觀察 Console → App Check 的請求報表，等「已驗證」的比例穩定（通常 1～2 天，讓還開著舊分頁的人也換到新版）。
+4. 把 `functions/.env` 的 `MLEVEL_APPCHECK_ENFORCE` 改成 `true`，`npm run deploy:functions` —— 這時候才會真的開始擋。
+
+`MLEVEL_APPCHECK_ENFORCE=false`（預設）是**只記錄不阻擋**：沒帶 token 或 token 無效時只在 log 留 `App Check token missing / rejected`，請求照樣放行。所以照上面的順序做，中途不會有任何一刻擋到真實使用者。
+
+### 本機開發
+
+`vite dev` 下會自動掛上 debug token。第一次跑時瀏覽器 console 會印出一組 UUID，複製到 Console → App Check → 該 App 的**管理 debug token**註冊，之後把它填進 `.env` 的 `VITE_FIREBASE_APPCHECK_DEBUG_TOKEN` 就不會每次重開都換一組。site key 沒填時前端不會啟用 App Check，後端在預設的非強制模式下照樣放行，本機不設定也能跑完整流程。
 
 ## 安全性備註
 
 - 訂單含授權金鑰與購買者 email，`firestore.rules` 全部 deny，只走 Cloud Functions。
 - `/result` 的導回網址會比對允許清單（localhost、`<專案>.web.app`、`<專案>.firebaseapp.com`，以及 `MLEVEL_ALLOWED_REDIRECT_HOSTS` 額外指定的網域），避免變成開放轉址。**綁自訂網域後記得把網域加進 `MLEVEL_ALLOWED_REDIRECT_HOSTS`**，否則付款完不會導回前端。
 - 綠界的 HashKey / HashIV 只存在 `functions/.env`，不會進前端 bundle。
+- App Check 驗的是「請求來自這個網站」，不是「這個人是誰」，所以它是**額外一層**：`/order` 與 `/download` 仍然要 `accessToken`、`/lookup` 與 `/verify` 仍然有 IP 次數上限，這些都沒有因為 App Check 而放寬。
 - 程式檔案不對外公開：Storage 物件不需要（也不該）設成公開，一律由 `/download` 驗過授權才串出去。

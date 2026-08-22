@@ -41,6 +41,11 @@ const PRODUCT = {
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const MAX_EMAIL_CHARS = 254;
 
+// 綠界的 MerchantTradeNo 規格是「僅英數字、上限 20 碼」，我們自己產的也是這個格式。
+// 回呼帶進來的值會被當成 Firestore 的 document id，先擋掉不合格式的，
+// 免得把奇怪字元（例如 `/`）餵進 Firestore 或反射進 HTML。
+const ORDER_ID_PATTERN = /^[A-Za-z0-9]{1,20}$/;
+
 // 程式壓縮檔在 Cloud Storage 的位置。/download 每次都即時讀這個物件，
 // 所以要發布新版只要覆蓋它，不必改環境變數也不必重新部署 Functions。
 const STORAGE_BUCKET = (process.env.MLEVEL_STORAGE_BUCKET || '').trim();
@@ -60,15 +65,24 @@ const lookupAttempts = new Map();
 const verifyAttempts = new Map();
 
 /**
- * Cloud Run 會把真正的來源 IP 放在 X-Forwarded-For 的第一段；
- * request.ip 拿到的是前面那層 proxy，所有人都會長一樣。
+ * X-Forwarded-For 是「用戶端可自由填寫」的 header：Google Front End 只會把真正的
+ * 來源 IP「附加」上去，不會清掉前面的內容。所以取第一段等於讓對方自己決定要被
+ * 算在哪個 IP 頭上，換一個假值限流就歸零。
+ *
+ * GFE 的格式是 `<用戶端填的...>, <真正的來源 IP>, <GFE 的 IP>`，
+ * 真正可信的是倒數第二段；長度不足時只能退回 request.ip。
  */
 function getClientIp(request) {
-  const forwarded = String(request.get('x-forwarded-for') || '')
-    .split(',')[0]
-    .trim();
+  const chain = String(request.get('x-forwarded-for') || '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
 
-  return forwarded || request.ip || '';
+  if (chain.length >= 2) {
+    return chain[chain.length - 2];
+  }
+
+  return request.ip || chain[0] || '';
 }
 
 function tooManyAttempts(attempts, ip, max) {
@@ -97,10 +111,49 @@ function tooManyVerifies(ip) {
   return tooManyAttempts(verifyAttempts, ip, VERIFY_MAX_ATTEMPTS);
 }
 
+// App Check：驗「這個請求是不是從自家網站發出來的」。只驗瀏覽器會打的三支端點，
+// /notify 與 /result 是綠界的伺服器與轉址、/verify 是桌面程式、/download 是使用者直接
+// 點連結開新頁，這些都帶不了 App Check token，驗了只會把正常流程擋死。
+const APPCHECK_PATHS = new Set(['/create', '/order', '/lookup']);
+// 預設「只記錄不阻擋」（monitor 模式），確認 Console 的 App Check 報表幾乎全是已驗證流量後，
+// 再把 functions/.env 的 MLEVEL_APPCHECK_ENFORCE 設成 true 開始真的擋。
+const APPCHECK_ENFORCE = String(process.env.MLEVEL_APPCHECK_ENFORCE || '').trim().toLowerCase() === 'true';
+
+/**
+ * 通過就回 true；沒通過且處於強制模式時，會直接把 401 回出去並回 false，
+ * 呼叫端只要 `if (!(await verifyAppCheck(...))) return;` 就好。
+ */
+async function verifyAppCheck(request, response) {
+  const token = request.get('X-Firebase-AppCheck') || '';
+  const path = request.path;
+
+  if (token) {
+    try {
+      await admin.appCheck().verifyToken(token);
+      return true;
+    } catch (error) {
+      logger.warn('App Check token rejected', {
+        path,
+        enforce: APPCHECK_ENFORCE,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  } else {
+    logger.warn('App Check token missing', { path, enforce: APPCHECK_ENFORCE });
+  }
+
+  if (!APPCHECK_ENFORCE) {
+    return true;
+  }
+
+  response.status(401).json({ ok: false, error: '來源驗證失敗，請重新整理頁面後再試。' });
+  return false;
+}
+
 function setCorsHeaders(response) {
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,POST,OPTIONS');
-  response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  response.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Firebase-AppCheck');
 }
 
 function getEcpayCallbackBaseUrl(request) {
@@ -172,6 +225,17 @@ function sanitizeRedirectBaseUrl(value) {
  * 只會發一組金鑰、只寫一次 paidAt。
  */
 async function markOrderPaid(merchantTradeNo, payload) {
+  // 縱深防禦：就算 CheckMacValue 過了（例如 HashKey 外流），也要確認這筆回呼
+  // 真的是打給我們這個特店的
+  const { merchantId } = getEcpayConfig();
+  if (payload.MerchantID !== undefined && String(payload.MerchantID) !== merchantId) {
+    logger.error('Paid callback MerchantID mismatch', {
+      merchantTradeNo,
+      received: String(payload.MerchantID),
+    });
+    return null;
+  }
+
   const ref = db.collection(ORDERS).doc(merchantTradeNo);
 
   return db.runTransaction(async (tx) => {
@@ -184,6 +248,18 @@ async function markOrderPaid(merchantTradeNo, payload) {
     const data = snapshot.data();
     if (data.status === 'paid' && data.licenseKey) {
       return data;
+    }
+
+    // 實收金額必須等於這筆訂單的金額，否則不發金鑰。
+    // 綠界的 ReturnURL / OrderResultURL 一定會帶 TradeAmt，缺了就是不該信的回呼。
+    const paidAmount = Number(payload.TradeAmt);
+    if (!Number.isFinite(paidAmount) || Math.round(paidAmount) !== Math.round(Number(data.amount))) {
+      logger.error('Paid callback TradeAmt mismatch', {
+        merchantTradeNo,
+        received: payload.TradeAmt,
+        expected: data.amount,
+      });
+      return null;
     }
 
     const paidAt = new Date();
@@ -332,6 +408,10 @@ exports.ecpayApi = onRequest(async (request, response) => {
 
   const path = request.path.replace(/\/+$/, '') || '/';
 
+  if (APPCHECK_PATHS.has(path) && !(await verifyAppCheck(request, response))) {
+    return;
+  }
+
   try {
     if (request.method === 'GET' && path === '/') {
       response.status(200).json({
@@ -419,7 +499,8 @@ exports.ecpayApi = onRequest(async (request, response) => {
         return;
       }
 
-      const merchantTradeNo = typeof payload.MerchantTradeNo === 'string' ? payload.MerchantTradeNo : '';
+      const rawTradeNo = typeof payload.MerchantTradeNo === 'string' ? payload.MerchantTradeNo : '';
+      const merchantTradeNo = ORDER_ID_PATTERN.test(rawTradeNo) ? rawTradeNo : '';
       const rtnCode = Number(payload.RtnCode);
 
       if (merchantTradeNo && rtnCode === 1) {
@@ -434,7 +515,8 @@ exports.ecpayApi = onRequest(async (request, response) => {
     if ((request.method === 'POST' || request.method === 'GET') && path === '/result') {
       const payload = (request.method === 'GET' ? request.query : request.body) || {};
 
-      const merchantTradeNo = typeof payload.MerchantTradeNo === 'string' ? payload.MerchantTradeNo : '';
+      const rawTradeNo = typeof payload.MerchantTradeNo === 'string' ? payload.MerchantTradeNo : '';
+      const merchantTradeNo = ORDER_ID_PATTERN.test(rawTradeNo) ? rawTradeNo : '';
       const rtnCode = Number(payload.RtnCode);
       const verified = verifyEcpayCallback(payload);
       const status = verified && rtnCode === 1 ? 'success' : 'cancel';
@@ -444,11 +526,11 @@ exports.ecpayApi = onRequest(async (request, response) => {
 
       if (merchantTradeNo) {
         // 冪等：若背景通知還沒進來，這裡也把成功訂單標記為已付款並發金鑰
-        const order =
-          status === 'success'
-            ? await markOrderPaid(merchantTradeNo, payload)
-            : (await db.collection(ORDERS).doc(merchantTradeNo).get()).data();
+        if (status === 'success') {
+          await markOrderPaid(merchantTradeNo, payload);
+        }
 
+        const order = (await db.collection(ORDERS).doc(merchantTradeNo).get()).data();
         if (order) {
           redirectBaseUrl = typeof order.redirectBaseUrl === 'string' ? order.redirectBaseUrl : '';
           accessToken = typeof order.accessToken === 'string' ? order.accessToken : '';
@@ -459,20 +541,26 @@ exports.ecpayApi = onRequest(async (request, response) => {
         const query = new URLSearchParams({
           orderId: merchantTradeNo,
           status,
-          token: accessToken,
         });
+        // accessToken 等於這筆訂單的鑰匙（能打 /order 與 /download）。
+        // 只有 CheckMacValue 驗過的回呼才是真的來自綠界，才可以把它交出去；
+        // 否則任何人只要猜到訂單編號就能拿到別人的授權與下載連結。
+        if (verified && accessToken) {
+          query.set('token', accessToken);
+        }
         response.redirect(`${redirectBaseUrl}/?${query.toString()}`);
         return;
       }
 
-      // 沒有可導回的前端網址時（例如直接測 API），至少給一個純文字結果頁
-      response.status(200).send(`
+      // 沒有可導回的前端網址時（例如直接測 API），至少給一個純文字結果頁。
+      // 這頁的內容全部來自回呼參數，一律轉義，不然就是反射型 XSS。
+      response.status(200).type('html').send(`<!doctype html>
         <html lang="zh-Hant">
           <head><meta charset="utf-8" /><title>綠界付款結果</title></head>
           <body style="font-family: sans-serif; padding: 24px;">
             <h1>${status === 'success' ? '付款完成' : '付款未完成'}</h1>
-            <p>訂單編號：${merchantTradeNo || '-'}</p>
-            <p>綠界訊息：${typeof payload.RtnMsg === 'string' ? payload.RtnMsg : '-'}</p>
+            <p>訂單編號：${escapeHtml(rawTradeNo || '-')}</p>
+            <p>綠界訊息：${escapeHtml(typeof payload.RtnMsg === 'string' ? payload.RtnMsg : '-')}</p>
           </body>
         </html>
       `);
@@ -484,8 +572,9 @@ exports.ecpayApi = onRequest(async (request, response) => {
       const orderId = typeof request.query.orderId === 'string' ? request.query.orderId.trim() : '';
       const token = typeof request.query.token === 'string' ? request.query.token.trim() : '';
 
-      if (!orderId || !token) {
-        throw new Error('orderId and token are required.');
+      if (!ORDER_ID_PATTERN.test(orderId) || !token) {
+        response.status(400).json({ ok: false, error: 'orderId and token are required.' });
+        return;
       }
 
       const snapshot = await db.collection(ORDERS).doc(orderId).get();
@@ -628,7 +717,7 @@ exports.ecpayApi = onRequest(async (request, response) => {
       const orderId = typeof request.query.orderId === 'string' ? request.query.orderId.trim() : '';
       const token = typeof request.query.token === 'string' ? request.query.token.trim() : '';
 
-      if (!orderId || !token) {
+      if (!ORDER_ID_PATTERN.test(orderId) || !token) {
         sendDownloadError(response, 400, 'MISSING_PARAMS', '下載連結不完整，請回到網站重新取得下載連結。');
         return;
       }

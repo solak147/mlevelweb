@@ -17,12 +17,44 @@ function optionalEnv(...names) {
   return undefined;
 }
 
+// 綠界文件上公開的測試特店金鑰。任何人都查得到，所以拿它們簽的 CheckMacValue
+// 等於沒有簽 —— 只能出現在測試環境。
+const PUBLIC_TEST_HASH_KEYS = new Set([DEFAULT_HASH_KEY, 'pwFHCqoQZGmho4w6']);
+const STAGE_HOST = 'payment-stage.ecpay.com.tw';
+
+/**
+ * 讀取綠界設定。
+ *
+ * 測試環境（ECPAY_API_URL 指向 payment-stage）允許沿用綠界公開的測試特店，
+ * 方便本機跑完整流程；但只要結帳網址是正式環境，就必須有自己的特店金鑰，
+ * 否則直接拋錯 —— 用公開金鑰跑正式流量，等於任何人都能偽造付款回呼、
+ * 自己發一組授權金鑰出來。
+ */
 function getEcpayConfig() {
+  const apiUrl = optionalEnv('ECPAY_API_URL') || DEFAULT_API_URL;
+  const merchantId = optionalEnv('ECPAY_MERCHANT_ID');
+  const hashKey = optionalEnv('ECPAY_HASH_KEY');
+  const hashIV = optionalEnv('ECPAY_HASH_IV');
+  const isStage = apiUrl.includes(STAGE_HOST);
+
+  if (!isStage) {
+    if (!merchantId || !hashKey || !hashIV) {
+      throw new Error(
+        'ECPAY_MERCHANT_ID / ECPAY_HASH_KEY / ECPAY_HASH_IV are required when ECPAY_API_URL points at production.',
+      );
+    }
+    if (PUBLIC_TEST_HASH_KEYS.has(hashKey)) {
+      throw new Error(
+        'Refusing to use ECPay public test credentials against the production checkout URL.',
+      );
+    }
+  }
+
   return {
-    apiUrl: optionalEnv('ECPAY_API_URL') || DEFAULT_API_URL,
-    merchantId: optionalEnv('ECPAY_MERCHANT_ID') || DEFAULT_MERCHANT_ID,
-    hashKey: optionalEnv('ECPAY_HASH_KEY') || DEFAULT_HASH_KEY,
-    hashIV: optionalEnv('ECPAY_HASH_IV') || DEFAULT_HASH_IV,
+    apiUrl,
+    merchantId: merchantId || DEFAULT_MERCHANT_ID,
+    hashKey: hashKey || DEFAULT_HASH_KEY,
+    hashIV: hashIV || DEFAULT_HASH_IV,
     callbackBaseUrl: optionalEnv('ECPAY_CALLBACK_BASE_URL'),
   };
 }

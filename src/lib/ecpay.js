@@ -1,3 +1,5 @@
+import { getAppCheckHeaders } from '../firebase'
+
 // 後端 Cloud Functions（ecpayApi）的 base URL，見 .env / .env.example
 const API_BASE_URL = import.meta.env.VITE_ECPAY_API_URL || ''
 
@@ -16,7 +18,7 @@ const buildUrl = (path) => {
 export async function createEcpayOrder(payload) {
   const response = await fetch(buildUrl('create'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(await getAppCheckHeaders()) },
     body: JSON.stringify(payload)
   })
 
@@ -58,7 +60,7 @@ export async function fetchOrder(orderId, token) {
   url.searchParams.set('orderId', orderId)
   url.searchParams.set('token', token)
 
-  const response = await fetch(url.toString())
+  const response = await fetch(url.toString(), { headers: await getAppCheckHeaders() })
   const data = await response.json().catch(() => ({}))
   if (!response.ok || !data.ok) {
     throw new Error(data.error || `查詢訂單失敗（HTTP ${response.status}）`)
@@ -74,7 +76,7 @@ export async function fetchOrder(orderId, token) {
 export async function lookupLicense(payload) {
   const response = await fetch(buildUrl('lookup'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(await getAppCheckHeaders()) },
     body: JSON.stringify(payload)
   })
 
