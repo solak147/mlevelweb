@@ -86,6 +86,21 @@ Storage 上找不到物件時，若 `MLEVEL_DOWNLOAD_URL` 有設定會轉址過�
 失敗訊息不區分「金鑰錯」與「email 對不上」，避免變成金鑰有效性的探測工具；
 另外有一層 per-IP 的粗略限流（一分鐘 10 次，只存在單一實例記憶體，擋不住分散式嘗試）。
 
+### 程式啟動時的授權驗證
+`mlevel.exe` 一開起來會先要金鑰，拿去打 `POST /verify`（body `{ "licenseKey": "..." }`），
+回 `{ ok, valid, reason, expiresAt, daysLeft }`。`reason` 是
+`OK` / `EXPIRED` / `NOT_FOUND` / `INVALID_FORMAT` / `RATE_LIMITED`。
+
+這支端點沒有任何身分驗證 —— 誰拿到一組金鑰都能打，所以它**只回「有效嗎、到什麼時候」**，
+不吐 email、訂單編號或 `accessToken`；同一 IP 一分鐘 30 次（程式每次啟動打一次，
+網咖／宿舍會共用出口 IP，所以比 `/lookup` 的 10 次寬）。驗證成功會順手把
+`verifyCount` / `lastVerifyAt` 寫回訂單，寫失敗不影響回應。
+
+程式端在 `D:\mlevel\license_gate.py`：驗過的金鑰存在使用者的
+`%LOCALAPPDATA%\mlevel\license.json`，連不上後端時只要上次驗證成功還在 3 天內、
+授權也還沒到期就先放行（別讓後端維護把付了錢的人關在門外）。500 或非 JSON 的回應一律
+當成「問不到」而不是「金鑰無效」，同理。
+
 ### 授權金鑰
 格式 `MLV-XXXX-XXXX-XXXX-XXXX`（去掉 0/O/1/I/L 等易混淆字元），以 CSPRNG 產生，自付款起算 30 天（`functions/license.js` 的 `calcExpiresAt`）。發放寫在 Firestore transaction 裡，`/notify` 與 `/result` 重複觸發也只會發一組。
 
@@ -95,7 +110,7 @@ Storage 上找不到物件時，若 `MLEVEL_DOWNLOAD_URL` 有設定會轉址過�
 | --- | --- |
 | `functions/ecpay.js` | CheckMacValue 計算／驗證、AIO 訂單參數組裝 |
 | `functions/license.js` | 授權金鑰、存取權杖、到期日、email 遮罩 |
-| `functions/index.js` | `ecpayApi` 的 `/create` `/notify` `/result` `/order` `/lookup` `/download` 路由 |
+| `functions/index.js` | `ecpayApi` 的 `/create` `/notify` `/result` `/order` `/lookup` `/verify` `/download` 路由 |
 | `src/lib/ecpay.js` | 前端呼叫後端、動態表單 POST 導向綠界、查訂單 |
 | `src/components/CheckoutModal.vue` | 結帳視窗（收 email、送出付款） |
 | `src/components/LicenseResult.vue` | 付款回跳後顯示授權金鑰 |

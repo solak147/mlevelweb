@@ -49,12 +49,15 @@ const DOWNLOAD_FILENAME = DOWNLOAD_OBJECT.split('/').pop() || 'mlevel.zip';
 // 簽章網址的有效期。夠久讓使用者按下下載、又短到轉貼出去很快就失效。
 const DOWNLOAD_URL_TTL_MS = 15 * 60 * 1000;
 
-// /lookup 的粗略防爆破：同一 IP 一分鐘最多 10 次。
+// /lookup 與 /verify 的粗略防爆破：同一 IP 一分鐘的次數上限。
 // 計數只存在單一實例的記憶體裡，擋不住分散式嘗試，但足以讓亂試腳本沒效率。
 const LOOKUP_WINDOW_MS = 60 * 1000;
 const LOOKUP_MAX_ATTEMPTS = 10;
+// 程式每次啟動都會打一次 /verify，而網咖／宿舍會共用出口 IP，所以這裡放寬一些。
+const VERIFY_MAX_ATTEMPTS = 30;
 const LOOKUP_TRACKED_IPS = 500;
 const lookupAttempts = new Map();
+const verifyAttempts = new Map();
 
 /**
  * Cloud Run 會把真正的來源 IP 放在 X-Forwarded-For 的第一段；
@@ -68,22 +71,30 @@ function getClientIp(request) {
   return forwarded || request.ip || '';
 }
 
-function tooManyLookups(ip) {
+function tooManyAttempts(attempts, ip, max) {
   if (!ip) {
     return false;
   }
 
   const now = Date.now();
-  const hits = (lookupAttempts.get(ip) || []).filter((at) => now - at < LOOKUP_WINDOW_MS);
+  const hits = (attempts.get(ip) || []).filter((at) => now - at < LOOKUP_WINDOW_MS);
   hits.push(now);
 
   // 單純避免記憶體無上限成長，超過就整批丟掉重新計數
-  if (lookupAttempts.size > LOOKUP_TRACKED_IPS) {
-    lookupAttempts.clear();
+  if (attempts.size > LOOKUP_TRACKED_IPS) {
+    attempts.clear();
   }
-  lookupAttempts.set(ip, hits);
+  attempts.set(ip, hits);
 
-  return hits.length > LOOKUP_MAX_ATTEMPTS;
+  return hits.length > max;
+}
+
+function tooManyLookups(ip) {
+  return tooManyAttempts(lookupAttempts, ip, LOOKUP_MAX_ATTEMPTS);
+}
+
+function tooManyVerifies(ip) {
+  return tooManyAttempts(verifyAttempts, ip, VERIFY_MAX_ATTEMPTS);
 }
 
 function setCorsHeaders(response) {
@@ -332,6 +343,7 @@ exports.ecpayApi = onRequest(async (request, response) => {
           'GET|POST /result',
           'GET /order',
           'POST /lookup',
+          'POST /verify',
           'GET /download',
         ],
       });
@@ -531,7 +543,86 @@ exports.ecpayApi = onRequest(async (request, response) => {
       return;
     }
 
-    // 6. 授權下載：每次下載都重新驗訂單與有效期限，再把 Storage 上的檔案串回去。
+    // 6. 程式啟動時的授權驗證。只收金鑰、只回「有效嗎、到什麼時候」，
+    //    不吐 email、訂單編號或存取權杖 —— 這支端點沒有任何身分驗證，
+    //    任何人拿一組金鑰都能打，回什麼就等於對外公開什麼。
+    if (request.method === 'POST' && path === '/verify') {
+      const licenseKey = normalizeLicenseKey((request.body || {}).licenseKey);
+
+      if (!licenseKey) {
+        response.status(400).json({
+          ok: false,
+          valid: false,
+          reason: 'INVALID_FORMAT',
+          error: '金鑰格式不正確，應為 MLV-XXXX-XXXX-XXXX-XXXX。',
+        });
+        return;
+      }
+
+      const clientIp = getClientIp(request);
+      if (tooManyVerifies(clientIp)) {
+        logger.warn('Verify rate limited', { ip: clientIp });
+        response.status(429).json({
+          ok: false,
+          valid: false,
+          reason: 'RATE_LIMITED',
+          error: '驗證次數過多，請一分鐘後再試。',
+        });
+        return;
+      }
+
+      const matches = await db.collection(ORDERS).where('licenseKey', '==', licenseKey).limit(5).get();
+      const hit = matches.docs.find((doc) => doc.data().status === 'paid');
+
+      if (!hit) {
+        response.status(404).json({
+          ok: false,
+          valid: false,
+          reason: 'NOT_FOUND',
+          error: '查不到這組授權金鑰。',
+        });
+        return;
+      }
+
+      const expiresAt = readExpiresAt(hit.data());
+      const expired = expiresAt ? expiresAt.getTime() <= Date.now() : false;
+
+      if (expired) {
+        response.status(403).json({
+          ok: true,
+          valid: false,
+          reason: 'EXPIRED',
+          expiresAt: expiresAt.toISOString(),
+          error: '授權已到期，重新購買後即可繼續使用。',
+        });
+        return;
+      }
+
+      // 啟用紀錄純粹是營運資訊（有沒有人在用、多久開一次），寫失敗不該擋住啟動
+      hit.ref
+        .set(
+          {
+            verifyCount: admin.firestore.FieldValue.increment(1),
+            lastVerifyAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        )
+        .catch((error) => logger.warn('Failed to record verify', error));
+
+      response.status(200).json({
+        ok: true,
+        valid: true,
+        reason: 'OK',
+        licenseKey,
+        expiresAt: expiresAt ? expiresAt.toISOString() : '',
+        daysLeft: expiresAt
+          ? Math.max(0, Math.ceil((expiresAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000)))
+          : null,
+      });
+      return;
+    }
+
+    // 7. 授權下載：每次下載都重新驗訂單與有效期限，再把 Storage 上的檔案串回去。
     //    程式更新只要覆蓋 Storage 上的物件，使用者下次點下載拿到的就是新版。
     if ((request.method === 'GET' || request.method === 'HEAD') && path === '/download') {
       const orderId = typeof request.query.orderId === 'string' ? request.query.orderId.trim() : '';
