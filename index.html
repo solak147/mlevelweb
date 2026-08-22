@@ -3,15 +3,188 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MLevel — 楓之谷經典版 自動化輔助腳本</title>
-    <meta name="description" content="楓之谷經典版自動化輔助程式，掛機練功、自動補血補魔、自動撿物。月費 NT$399。" />
+
+    <!-- SEO：站台網址集中在這裡，換自訂網域時同步改 public/sitemap.xml、public/robots.txt -->
+    <title>楓之谷經典版 自動化輔助程式｜掛機打怪腳本 MLevel</title>
+    <meta
+      name="description"
+      content="MLevel 是《楓之谷 經典版》專用的自動化輔助程式：圖像辨識自動打怪、自動補血補魔、自動撿物、錄路線掛機走位。Windows 免安裝，NT$399／月，付款後立即取得授權金鑰。"
+    />
+    <meta
+      name="keywords"
+      content="楓之谷經典版, 楓之谷 自動化, 楓之谷 輔助程式, 楓之谷 腳本, 楓之谷 掛機, 自動打怪, 自動補血, 自動撿物, MapleStory Classic, MLevel"
+    />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
+    <meta name="author" content="MLevel" />
+    <meta name="theme-color" content="#0b0e14" />
+    <link rel="canonical" href="https://mlevel-f575a.web.app/" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="MLevel" />
+    <meta property="og:locale" content="zh_TW" />
+    <meta property="og:url" content="https://mlevel-f575a.web.app/" />
+    <meta property="og:title" content="楓之谷經典版 自動化輔助程式｜掛機打怪腳本 MLevel" />
+    <meta
+      property="og:description"
+      content="圖像辨識自動打怪、自動補血補魔、自動撿物、錄路線掛機走位。Windows 免安裝，NT$399／月，付款後立即取得授權金鑰。"
+    />
+    <meta property="og:image" content="https://mlevel-f575a.web.app/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="MLevel — 楓之谷經典版自動化輔助程式" />
+
+    <!-- Twitter / X -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="楓之谷經典版 自動化輔助程式｜掛機打怪腳本 MLevel" />
+    <meta
+      name="twitter:description"
+      content="圖像辨識自動打怪、自動補血補魔、自動撿物、錄路線掛機走位。Windows 免安裝，NT$399／月。"
+    />
+    <meta name="twitter:image" content="https://mlevel-f575a.web.app/og-image.png" />
+
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍁</text></svg>" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet" />
+
+    <!-- 結構化資料：網站、軟體產品（含價格）、常見問題 -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "WebSite",
+          "@id": "https://mlevel-f575a.web.app/#website",
+          "url": "https://mlevel-f575a.web.app/",
+          "name": "MLevel",
+          "alternateName": "MLevel 楓之谷經典版自動化輔助程式",
+          "inLanguage": "zh-Hant-TW",
+          "publisher": { "@id": "https://mlevel-f575a.web.app/#org" }
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://mlevel-f575a.web.app/#org",
+          "name": "MLevel",
+          "url": "https://mlevel-f575a.web.app/",
+          "description": "《楓之谷 經典版》自動化輔助程式 MLevel 的開發與授權發放。"
+        },
+        {
+          "@type": "SoftwareApplication",
+          "@id": "https://mlevel-f575a.web.app/#app",
+          "name": "MLevel",
+          "alternateName": "楓之谷經典版 自動化輔助程式",
+          "url": "https://mlevel-f575a.web.app/",
+          "applicationCategory": "GameApplication",
+          "applicationSubCategory": "遊戲自動化輔助程式",
+          "operatingSystem": "Windows 10, Windows 11（64-bit）",
+          "inLanguage": "zh-Hant-TW",
+          "softwareRequirements": "遊戲須使用視窗模式，Windows 顯示縮放 100%，需以管理員身分執行",
+          "installUrl": "https://mlevel-f575a.web.app/",
+          "description": "專為《楓之谷 經典版》打造的圖像辨識自動化輔助程式：自動打怪、魔力見底自動改普攻、自動補血補魔、自動撿物、錄製小地圖路線循環走位、卡住自動脫困，並可先測試比對分數與檢視日誌。不讀寫遊戲記憶體、不注入程式碼。",
+          "featureList": [
+            "圖像辨識自動打怪",
+            "魔力不足自動切換普通攻擊",
+            "自動補血補魔（血魔門檻與按鍵分開設定）",
+            "F8 錄製小地圖路線並循環走位",
+            "路線綁定地圖，站錯地圖不啟動",
+            "自動撿物（可設定只在無交戰目標時撿）",
+            "卡住自動脫困",
+            "比對分數測試與執行日誌"
+          ],
+          "offers": {
+            "@type": "Offer",
+            "price": "399",
+            "priceCurrency": "TWD",
+            "availability": "https://schema.org/InStock",
+            "url": "https://mlevel-f575a.web.app/",
+            "description": "月授權，信用卡一次付清，授權金鑰自付款起算 30 天有效。"
+          },
+          "publisher": { "@id": "https://mlevel-f575a.web.app/#org" },
+          "disambiguatingDescription": "第三方非官方工具，與 Nexon 及《楓之谷》官方無任何關聯。"
+        },
+        {
+          "@type": "FAQPage",
+          "@id": "https://mlevel-f575a.web.app/#faq",
+          "isPartOf": { "@id": "https://mlevel-f575a.web.app/#website" },
+          "mainEntity": [
+            {
+              "@type": "Question",
+              "name": "支援哪些作業系統？",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "64 位元的 Windows 10 與 Windows 11。免安裝、不用另外裝 Python。目前不支援 macOS 與模擬器環境。"
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "有什麼環境要求？",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "遊戲請用視窗模式（獨佔全螢幕會被拉伸，模板全部失準），Windows 顯示縮放固定 100%，並且不要讓其他視窗蓋住遊戲畫面。遊戲以管理員身分執行時，本程式也要以管理員身分啟動，否則按鍵會被 Windows 擋掉。"
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "多少錢？怎麼付款？",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "月授權 NT$399，透過綠界 ECPay 信用卡一次付清。付款完成後，授權金鑰與下載連結會直接顯示在頁面上。"
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "一組授權可以用多久？",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "授權金鑰自付款起算 30 天有效。目前沒有裝置綁定與線上後台，請自行保存好金鑰、不要外流。"
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "付款頁面關掉了，要怎麼重新下載？",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "用頁面上的「找回授權」，填入購買時的 email 與授權金鑰，即可重新取得有效期限與下載連結。"
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "需要自己截圖嗎？",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "要。人物圖與怪物圖是你在自己的畫面上截的，模板比對沒有縮放不變性，所以換了顯示縮放要重截（換遊戲視窗大小則不用）。附的範例圖可以直接先試。"
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "會不會被偵測？",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "程式只讀取遊戲畫面做圖像比對、用系統鍵盤事件送出按鍵，不修改遊戲記憶體、不注入程式碼。但任何第三方輔助工具都存在風險，且違反遊戲服務條款，使用前請自行評估，帳號後果由使用者自行承擔。"
+              }
+            }
+          ]
+        }
+      ]
+    }
+    </script>
   </head>
   <body>
     <div id="app"></div>
+    <noscript>
+      <h1>楓之谷經典版 自動化輔助程式 MLevel</h1>
+      <p>
+        MLevel 是專為《楓之谷 經典版》打造的圖像辨識自動化輔助程式：自動打怪、魔力見底自動改普攻、
+        自動補血補魔、自動撿物，並可用 F8 錄一條小地圖路線讓角色照著循環跑。Windows 10／11 免安裝，
+        月授權 NT$399，付款完成後立即取得授權金鑰與下載連結。
+      </p>
+      <p>本頁需要 JavaScript 才能購買與查詢授權，請開啟 JavaScript 後重新整理。</p>
+      <p>
+        免責聲明：本程式為第三方非官方工具，與 Nexon 及《楓之谷》官方無任何關聯。
+        使用第三方輔助程式可能違反遊戲服務條款，並導致帳號受到處分，請自行評估風險並承擔後果。
+      </p>
+    </noscript>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

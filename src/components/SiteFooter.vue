@@ -14,7 +14,7 @@ const emit = defineEmits(['lookup'])
           <a href="#features">功能</a>
           <a href="#faq">常見問題</a>
           <button type="button" @click="emit('lookup')">找回授權／下載</button>
-          <a href="mailto:support@mlevel.example">聯絡我們</a>
+          <!-- <a href="mailto:support@mlevel.example">聯絡我們</a> -->
         </nav>
       </div>
 

@@ -14,9 +14,10 @@ const stats = [
     <div class="glow glow-b" />
 
     <div class="container inner">
-      <span class="eyebrow">MapleStory Classic · 自動化輔助</span>
+      <span class="eyebrow">MapleStory Classic · MLevel</span>
 
       <h1>
+        <span class="kw">楓之谷經典版 自動化輔助程式</span>
         讓角色自己練功，<br />
         你只要<span class="hl">收成果</span>。
       </h1>
@@ -79,6 +80,15 @@ const stats = [
 h1 {
   margin-top: 18px;
   font-size: clamp(34px, 6.4vw, 62px);
+}
+/* 關鍵字行：讓 h1 帶到「楓之谷經典版 自動化輔助程式」，視覺上維持副標的份量 */
+.kw {
+  display: block;
+  margin-bottom: 12px;
+  font-size: clamp(15px, 2.4vw, 20px);
+  font-weight: 700;
+  letter-spacing: .06em;
+  color: var(--muted);
 }
 .hl {
   background: linear-gradient(100deg, var(--brand-2), var(--leaf));

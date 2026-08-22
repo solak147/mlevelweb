@@ -1,0 +1,9 @@
+# https://mlevel-f575a.web.app/robots.txt
+User-agent: *
+Allow: /
+
+# 付款回跳與授權查詢的網址沒有索引價值（帶 orderId / token）
+Disallow: /*?orderId=
+Disallow: /*?status=
+
+Sitemap: https://mlevel-f575a.web.app/sitemap.xml

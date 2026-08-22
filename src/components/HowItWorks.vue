@@ -13,7 +13,7 @@ const steps = [
       <div class="section-head">
         <span class="eyebrow">How it works</span>
         <h2>四個步驟就能開跑</h2>
-        <p>不需要任何程式基礎，遊戲請用視窗模式、Windows 顯示縮放固定 100%。</p>
+        <p>從購買到開始掛機打怪只要四步，不需要任何程式基礎；遊戲請用視窗模式、Windows 顯示縮放固定 100%。</p>
       </div>
 
       <ol class="steps">

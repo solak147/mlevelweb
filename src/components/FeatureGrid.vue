@@ -17,7 +17,7 @@ const features = [
       <div class="section-head">
         <span class="eyebrow">Features</span>
         <h2>看得到、走得到、打得到</h2>
-        <p>偵測、攻擊、補給、走位分成四個頁簽，全部在同一個視窗裡設定完。</p>
+        <p>楓之谷經典版自動化輔助程式把偵測、攻擊、補給、走位分成四個頁簽，全部在同一個視窗裡設定完。</p>
       </div>
 
       <div class="grid">
