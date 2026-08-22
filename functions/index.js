@@ -1,5 +1,6 @@
 const { onRequest } = require('firebase-functions/v2/https');
 const { setGlobalOptions } = require('firebase-functions');
+const { defineSecret } = require('firebase-functions/params');
 const logger = require('firebase-functions/logger');
 const admin = require('firebase-admin');
 
@@ -21,9 +22,23 @@ const {
 admin.initializeApp();
 const db = admin.firestore();
 
+// 綠界的 HashKey / HashIV 是驗證付款回呼（CheckMacValue）的唯一憑據，等級等同密碼，
+// 所以不放 functions/.env（dotenv 的值會變成 Cloud Functions 上任何人都看得到的環境變數），
+// 改由 Secret Manager 保管、只在執行時注入給這支 Function。
+//
+// 注入的方式就是「同名的環境變數」，所以 ecpay.js 照樣讀 process.env.ECPAY_HASH_KEY，
+// 不需要為此改動。本機 emulator 讀 functions/.secret.local（已被 .gitignore 排除）。
+//
+// 首次部署前要先建立這兩個 secret，否則 firebase deploy 會直接失敗：
+//   firebase functions:secrets:set ECPAY_HASH_KEY
+//   firebase functions:secrets:set ECPAY_HASH_IV
+const ecpayHashKey = defineSecret('ECPAY_HASH_KEY');
+const ecpayHashIV = defineSecret('ECPAY_HASH_IV');
+
 setGlobalOptions({
   region: 'asia-east1',
   maxInstances: 10,
+  secrets: [ecpayHashKey, ecpayHashIV],
 });
 
 const ORDERS = 'mlevel_orders';
@@ -45,6 +60,45 @@ const MAX_EMAIL_CHARS = 254;
 // 回呼帶進來的值會被當成 Firestore 的 document id，先擋掉不合格式的，
 // 免得把奇怪字元（例如 `/`）餵進 Firestore 或反射進 HTML。
 const ORDER_ID_PATTERN = /^[A-Za-z0-9]{1,20}$/;
+
+// 綠界回呼要寫進 Firestore 的欄位白名單。
+//
+// 信用卡回呼會帶 card6no（卡號前六碼，也就是發卡行 BIN）與 card4no（後四碼）。
+// 後四碼對客服核對交易有用、留著；前六碼沒有用途，卻是敏感的卡片資訊，不留。
+// CheckMacValue 也不存 —— 驗過就沒有用了，留著只是多一份簽章在資料庫裡。
+// 白名單以外的欄位一律丟掉，之後綠界新增欄位也不會自動被存下來。
+const CALLBACK_FIELDS = new Set([
+  // 交易本體
+  'MerchantID', 'MerchantTradeNo', 'StoreID', 'TradeNo', 'TradeAmt', 'TradeDate',
+  'RtnCode', 'RtnMsg', 'PaymentType', 'PaymentTypeChargeFee', 'PaymentDate', 'SimulatePaid',
+  'CustomField1', 'CustomField2', 'CustomField3', 'CustomField4',
+  // 信用卡授權資訊（對帳／退刷時要用）
+  'gwsr', 'process_date', 'auth_code', 'amount', 'eci', 'card4no',
+  'stage', 'stast', 'staed',
+]);
+
+/**
+ * 過濾綠界回呼，只留白名單欄位。
+ * 被丟掉的欄位「只記名稱、不記內容」—— 否則 card6no 又會原封不動進 Cloud Logging。
+ */
+function pickCallbackFields(payload) {
+  const kept = {};
+  const dropped = [];
+
+  for (const [key, value] of Object.entries(payload)) {
+    if (CALLBACK_FIELDS.has(key)) {
+      kept[key] = typeof value === 'string' ? value : String(value);
+    } else {
+      dropped.push(key);
+    }
+  }
+
+  if (dropped.length) {
+    logger.info('Dropped ECPay callback fields', { dropped });
+  }
+
+  return kept;
+}
 
 // 程式壓縮檔在 Cloud Storage 的位置。/download 每次都即時讀這個物件，
 // 所以要發布新版只要覆蓋它，不必改環境變數也不必重新部署 Functions。
@@ -272,7 +326,7 @@ async function markOrderPaid(merchantTradeNo, payload) {
       ),
       transactionId: typeof payload.TradeNo === 'string' ? payload.TradeNo : '',
       paidAt: admin.firestore.Timestamp.fromDate(paidAt),
-      ecpayRawResult: payload,
+      ecpayRawResult: pickCallbackFields(payload),
     };
 
     tx.set(ref, update, { merge: true });
@@ -436,7 +490,8 @@ exports.ecpayApi = onRequest(async (request, response) => {
 
       const email = typeof body.email === 'string' ? body.email.trim().slice(0, MAX_EMAIL_CHARS) : '';
       if (!EMAIL_PATTERN.test(email)) {
-        throw new Error('A valid email is required.');
+        response.status(400).json({ ok: false, error: '請填寫正確的 Email。' });
+        return;
       }
 
       // 金額一律由後端決定；前端傳來的 amount 僅用於偵測不一致（例如改價後前端還沒更新）
@@ -816,7 +871,18 @@ exports.ecpayApi = onRequest(async (request, response) => {
       error: `Unsupported route: ${request.method} ${path}`,
     });
   } catch (error) {
-    logger.error('ecpayApi failed', error);
+    // 走到這裡的都是「沒預期到」的錯誤：Firestore 失敗、綠界設定不完整等等。
+    // 詳細內容只進 Cloud Logging，不回給前端 —— 錯誤訊息常常會帶出內部路徑、
+    // 資料庫欄位、設定名稱這類不該對外的資訊。
+    const traceId = String(request.get('x-cloud-trace-context') || '').split('/')[0];
+
+    logger.error('ecpayApi failed', {
+      path,
+      method: request.method,
+      traceId,
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
 
     // /download 串檔途中失敗時 header 已經送出，只能把連線收掉
     if (response.headersSent) {
@@ -824,9 +890,12 @@ exports.ecpayApi = onRequest(async (request, response) => {
       return;
     }
 
-    response.status(400).json({
+    response.status(500).json({
       ok: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
+      // 附上 trace id，使用者回報時我們才對得到 Cloud Logging 那一筆
+      error: traceId
+        ? `伺服器忙線或發生錯誤，請稍後再試。（代碼 ${traceId.slice(0, 16)}）`
+        : '伺服器忙線或發生錯誤，請稍後再試。',
     });
   }
 });

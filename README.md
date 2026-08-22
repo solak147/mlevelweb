@@ -145,6 +145,9 @@ App Check 用來讓後端分辨「請求真的是從這個網站發出來的」�
 
 - 訂單含授權金鑰與購買者 email，`firestore.rules` 全部 deny，只走 Cloud Functions。
 - `/result` 的導回網址會比對允許清單（localhost、`<專案>.web.app`、`<專案>.firebaseapp.com`，以及 `MLEVEL_ALLOWED_REDIRECT_HOSTS` 額外指定的網域），避免變成開放轉址。**綁自訂網域後記得把網域加進 `MLEVEL_ALLOWED_REDIRECT_HOSTS`**，否則付款完不會導回前端。
-- 綠界的 HashKey / HashIV 只存在 `functions/.env`，不會進前端 bundle。
+- 綠界的 HashKey / HashIV 由 **Secret Manager** 保管（`functions/index.js` 的 `defineSecret`），不在 `functions/.env`、也不會進前端 bundle。首次部署前要先建立：`firebase functions:secrets:set ECPAY_HASH_KEY`、`firebase functions:secrets:set ECPAY_HASH_IV`；本機 emulator 讀 `functions/.secret.local`。
+- 只要 `ECPAY_API_URL` 指向正式結帳網址，`getEcpayConfig()` 就會要求特店金鑰必填、且拒絕綠界公開的測試金鑰，避免用公開金鑰跑正式流量（那等於任何人都能偽造付款回呼）。
+- 付款回呼只保留欄位白名單（`CALLBACK_FIELDS`）：卡號後四碼 `card4no` 留著給客服核對，前六碼 `card6no`（BIN）不寫進 Firestore、也不進 log。
+- 未預期的錯誤只把細節寫進 Cloud Logging，回給前端的是通用訊息加一組 trace id，不外洩內部路徑或設定名稱。
 - App Check 驗的是「請求來自這個網站」，不是「這個人是誰」，所以它是**額外一層**：`/order` 與 `/download` 仍然要 `accessToken`、`/lookup` 與 `/verify` 仍然有 IP 次數上限，這些都沒有因為 App Check 而放寬。
 - 程式檔案不對外公開：Storage 物件不需要（也不該）設成公開，一律由 `/download` 驗過授權才串出去。
