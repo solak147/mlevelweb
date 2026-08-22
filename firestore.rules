@@ -1,0 +1,11 @@
+rules_version = '2';
+
+// mlevel_orders 內含授權金鑰與購買者 email，一律不開放前端直接讀寫；
+// 所有存取都經由 Cloud Functions（Admin SDK 會繞過這些規則）。
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

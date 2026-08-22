@@ -1,0 +1,15 @@
+node_modules
+dist
+.DS_Store
+*.local
+
+# 環境變數（.env.example 為範本，實際值不進版控）
+.env
+.env.*
+!.env.example
+
+# Firebase
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+functions/node_modules
