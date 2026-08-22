@@ -1,6 +1,5 @@
 const { onRequest } = require('firebase-functions/v2/https');
 const { setGlobalOptions } = require('firebase-functions');
-const { defineSecret } = require('firebase-functions/params');
 const logger = require('firebase-functions/logger');
 const admin = require('firebase-admin');
 
@@ -25,23 +24,9 @@ const {
 admin.initializeApp();
 const db = admin.firestore();
 
-// 綠界的 HashKey / HashIV 是驗證付款回呼（CheckMacValue）的唯一憑據，等級等同密碼，
-// 所以不放 functions/.env（dotenv 的值會變成 Cloud Functions 上任何人都看得到的環境變數），
-// 改由 Secret Manager 保管、只在執行時注入給這支 Function。
-//
-// 注入的方式就是「同名的環境變數」，所以 ecpay.js 照樣讀 process.env.ECPAY_HASH_KEY，
-// 不需要為此改動。本機 emulator 讀 functions/.secret.local（已被 .gitignore 排除）。
-//
-// 首次部署前要先建立這兩個 secret，否則 firebase deploy 會直接失敗：
-//   firebase functions:secrets:set ECPAY_HASH_KEY
-//   firebase functions:secrets:set ECPAY_HASH_IV
-const ecpayHashKey = defineSecret('ECPAY_HASH_KEY');
-const ecpayHashIV = defineSecret('ECPAY_HASH_IV');
-
 setGlobalOptions({
   region: 'asia-east1',
   maxInstances: 10,
-  secrets: [ecpayHashKey, ecpayHashIV],
 });
 
 const ORDERS = 'mlevel_orders';
