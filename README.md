@@ -7,12 +7,14 @@
 - 資料：Firestore `mlevel_orders` collection
 - 部署：Firebase Hosting
 
-## 開始使用前要填的三個地方
+Firebase 專案為 **`mlevel-f575a`**（見 `.firebaserc`），前端設定寫在 `src/firebase.js`。
 
-1. **Firebase 專案 ID** — `.firebaserc` 的 `YOUR_FIREBASE_PROJECT_ID` 換成你在 Firebase Console 建好的專案 ID。
-2. **前端 API 位址** — 複製 `.env.example` 為 `.env`，填入
-   `VITE_ECPAY_API_URL=https://asia-east1-<專案 ID>.cloudfunctions.net/ecpayApi`
-3. **後端環境變數** — 複製 `functions/.env.example` 為 `functions/.env`，填入綠界特店資料與下載連結。
+## 開始使用前要填的地方
+
+1. **前端 API 位址** — `.env` 已填好
+   `VITE_ECPAY_API_URL=https://asia-east1-mlevel-f575a.cloudfunctions.net/ecpayApi`（`.env` 不進版控，clone 後照 `.env.example` 補上）。
+2. **後端環境變數** — 複製 `functions/.env.example` 為 `functions/.env`，填入綠界特店資料與下載連結。
+3. **Firestore 資料庫** — 到 Firebase Console 建立 Firestore（位置選 `asia-east1`），否則 `/create` 寫不進訂單。
 
 > 目前 `functions/.env` 留空時會使用**綠界官方公開測試特店**（MerchantID `2000132`、測試結帳網址 `payment-stage.ecpay.com.tw`），可以直接跑完整流程。正式上線前務必換成自己的 `ECPAY_MERCHANT_ID` / `ECPAY_HASH_KEY` / `ECPAY_HASH_IV`，並把 `ECPAY_API_URL` 改成正式網址 `https://payment.ecpay.com.tw/Cashier/AioCheckOut/V5`。
 
@@ -60,6 +62,7 @@ npm run logs              # 看 ecpayApi 的 log
 | `src/components/CheckoutModal.vue` | 結帳視窗（收 email、送出付款） |
 | `src/components/LicenseResult.vue` | 付款回跳後顯示授權金鑰 |
 | `firestore.rules` | 前端一律不可讀寫訂單，只有 Functions（Admin SDK）能存取 |
+| `src/firebase.js` | 前端 Firebase App 設定；Analytics 暫時註解停用（含 `main.js` 的載入點） |
 
 ## 安全性備註
 

@@ -87,7 +87,7 @@ const pay = async () => {
             :disabled="submitting"
             required
           />
-          <span class="hint">授權金鑰與下載連結會綁定這個信箱，請填寫可收信的地址。</span>
+          <span class="hint">這個信箱只用於綁定授權與客服查詢，目前不會寄送任何信件。</span>
         </label>
 
         <label class="agree">
