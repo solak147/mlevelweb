@@ -75,7 +75,7 @@ onUnmounted(() => {
       <template v-if="!order">
         <span class="eyebrow">Recover</span>
         <h3>找回授權與下載</h3>
-        <p class="desc">輸入購買時填的 Email 與授權金鑰，就能重新取得下載連結與有效期限。</p>
+        <p class="desc">輸入購買時填的 Email 與授權金鑰，就能重新取得安裝檔與使用手冊的下載連結，以及授權有效期限。</p>
 
         <form class="form" @submit.prevent="submit">
           <label class="field">
@@ -136,12 +136,15 @@ onUnmounted(() => {
           <div v-if="order.licenseExpiresAt"><dt>有效期限</dt><dd>{{ formatDate(order.licenseExpiresAt) }}</dd></div>
         </dl>
 
-        <a v-if="order.downloadUrl" class="download" :href="order.downloadUrl" rel="noopener">下載最新版 MLevel</a>
+        <div v-if="order.downloadUrl" class="files">
+          <a class="download" :href="order.downloadUrl" rel="noopener">下載最新版安裝檔（mlevel.zip）</a>
+          <a v-if="order.manualUrl" class="download secondary" :href="order.manualUrl" rel="noopener">下載使用手冊（使用手冊.md）</a>
+        </div>
         <p v-else-if="order.licenseExpired" class="desc spaced">授權已到期，重新購買後即可再次下載。</p>
         <p v-else class="desc spaced">下載連結尚未設定，請聯絡客服取得程式。</p>
 
         <p v-if="error" class="error" role="alert">{{ error }}</p>
-        <p class="note">這個頁面隨時可以回來查，下載連結永遠指向最新版本。</p>
+        <p class="note">這個頁面隨時可以回來查，安裝檔與使用手冊的連結永遠指向最新版本。</p>
       </template>
     </div>
   </div>
@@ -275,9 +278,9 @@ h3 { margin: 10px 0 12px; font-size: 24px; }
 .meta dt { color: var(--muted); flex: none; }
 .meta dd { margin: 0; text-align: right; word-break: break-all; }
 
+.files { margin-top: 24px; display: grid; gap: 10px; }
 .download {
   display: block;
-  margin-top: 24px;
   padding: 16px 24px;
   border-radius: 999px;
   text-align: center;
@@ -288,6 +291,17 @@ h3 { margin: 10px 0 12px; font-size: 24px; }
   background: linear-gradient(100deg, var(--brand-2), var(--brand));
   box-shadow: var(--shadow-brand);
 }
+/* 使用手冊是附帶檔案，樣式退一階，別跟安裝檔搶主要動作 */
+.download.secondary {
+  padding: 14px 24px;
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: none;
+}
+.download.secondary:hover { border-color: var(--brand); color: var(--brand-2); }
 
 .note { margin-top: 18px; font-size: 12.5px; color: #7c88a3; }
 </style>

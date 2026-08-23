@@ -40,13 +40,13 @@ npm run logs              # 看 ecpayApi 的 log
                                     │
         使用者瀏覽器 /result      ◄──┘ 驗章 →（冪等）補發金鑰 → 302 導回 /?orderId=&status=&token=
                                     │
-        前端 GET /order?orderId=&token= ─► 顯示授權金鑰、有效期限、下載連結
+        前端 GET /order?orderId=&token= ─► 顯示授權金鑰、有效期限、安裝檔與使用手冊下載連結
 ```
 
 找回授權（付款回跳的網址關掉之後）：
 
 ```
-使用者填 email + licenseKey → POST /lookup ─► 驗金鑰＋email → 回傳金鑰、有效期限、下載連結
+使用者填 email + licenseKey → POST /lookup ─► 驗金鑰＋email → 回傳金鑰、有效期限、安裝檔與使用手冊下載連結
 ```
 
 ### 為什麼有 `token`
@@ -56,11 +56,24 @@ npm run logs              # 看 ecpayApi 的 log
 `/create` 完全不採用前端傳來的 `amount`，一律用 `functions/index.js` 的 `PRODUCT.amount`（NT$399），避免有人自組 request 用 1 元換金鑰。**調價時要同步改** `functions/index.js` 的 `PRODUCT`、`src/components/CheckoutModal.vue` 的 `PRICE`、`src/components/HeroSection.vue` 的顯示價格。
 
 ### 下載與程式更新
-下載走 `GET /download?orderId=&token=`：驗訂單已付款、授權未到期，然後 **302 轉址**到 Cloud Storage 上
-`MLEVEL_STORAGE_OBJECT`（預設 `mlevel.zip`）的下載網址。
+付費後可以拿到兩個檔案，都放在同一個 Storage bucket（`MLEVEL_STORAGE_BUCKET`，正式站是
+`gs://mlevel-f575a.firebasestorage.app`）：
 
-**要發布新版程式，只要覆蓋 Storage 上的那個物件就好** —— 不必改環境變數、不必重新部署 Functions，
-使用者下次點下載拿到的就是新版。
+| `?file=` | 環境變數 | 預設物件 | 內容 |
+| --- | --- | --- | --- |
+| `app`（省略時的預設值） | `MLEVEL_STORAGE_OBJECT` | `mlevel.zip` | 安裝檔 |
+| `manual` | `MLEVEL_STORAGE_MANUAL_OBJECT` | `使用手冊.md` | 使用手冊 |
+
+下載走 `GET /download?orderId=&token=&file=`：驗訂單已付款、授權未到期，然後 **302 轉址**到 Cloud Storage 上
+對應物件的下載網址。`file` 只認上表這兩個值，傳別的一律當 `app`，所以它不會變成「用 query string
+指定任意 Storage 路徑」的入口。`/order` 與 `/lookup` 回傳的 `downloadUrl`（安裝檔）與 `manualUrl`（使用手冊）
+就是這兩條連結。
+
+使用手冊的檔名是中文，而 `Content-Disposition` 只能放 ASCII，所以簽章網址照 RFC 5987 同時帶
+ASCII 退路檔名（`mlevel-manual.md`）與 UTF-8 的真正檔名（見 `attachmentDisposition`）。
+
+**要發布新版，只要覆蓋 Storage 上對應的物件就好** —— 不必改環境變數、不必重新部署 Functions，
+使用者下次點下載拿到的就是新版。安裝檔與使用手冊各自獨立，只更新其中一個也可以。
 
 轉址網址優先用 V4 簽章網址（有效期 15 分鐘）。簽章需要 Functions 的執行服務帳號有
 `iam.serviceAccounts.signBlob` 權限（`roles/iam.serviceAccountTokenCreator`）；沒有的話會退回讀取
@@ -75,7 +88,11 @@ Storage 物件 metadata 裡的 `firebaseStorageDownloadTokens` 組成下載網�
 `MISSING_PARAMS` / `ORDER_NOT_FOUND` / `NOT_PAID` / `LICENSE_EXPIRED` / `OBJECT_MISSING` /
 `STORAGE_UNAVAILABLE` / `NO_DOWNLOAD_URL`。
 
-Storage 上找不到物件時，若 `MLEVEL_DOWNLOAD_URL` 有設定會轉址過去當退路，否則回 `OBJECT_MISSING`。
+Storage 上找不到安裝檔時，若 `MLEVEL_DOWNLOAD_URL` 有設定會轉址過去當退路，否則回 `OBJECT_MISSING`；
+使用手冊沒有這條退路（那個變數只指向安裝檔），缺檔就直接回 `OBJECT_MISSING`。
+
+下載次數分開記在訂單上：安裝檔是 `downloadCount` / `lastDownloadAt`，使用手冊是
+`manualDownloadCount` / `lastManualDownloadAt`。
 
 ### 找回授權
 付款成功的頁面（`/?orderId=&status=&token=`）關掉之後就再也回不去，而且目前不會寄任何信件，
@@ -177,7 +194,7 @@ Storage 上找不到物件時，若 `MLEVEL_DOWNLOAD_URL` 有設定會轉址過�
 | `src/lib/ecpay.js` | 前端呼叫後端、動態表單 POST 導向綠界、查訂單 |
 | `src/components/CheckoutModal.vue` | 結帳視窗（收 email、送出付款） |
 | `src/components/LicenseResult.vue` | 付款回跳後顯示授權金鑰 |
-| `src/components/LicenseLookup.vue` | 用 email + 金鑰找回授權與下載連結 |
+| `src/components/LicenseLookup.vue` | 用 email + 金鑰找回授權、安裝檔與使用手冊的下載連結 |
 | `firestore.rules` | 前端一律不可讀寫訂單，只有 Functions（Admin SDK）能存取 |
 | `src/firebase.js` | 前端 Firebase App 設定、App Check 初始化與 `getAppCheckHeaders()`；Analytics 暫時註解停用 |
 
@@ -213,4 +230,4 @@ App Check 用來讓後端分辨「請求真的是從這個網站發出來的」�
 - 未預期的錯誤只把細節寫進 Cloud Logging，回給前端的是通用訊息加一組 trace id，不外洩內部路徑或設定名稱。
 - 一把金鑰同時只有一個席位（`mlevel_sessions` 的租約 + 心跳）。`sessionId` 是租約憑證，只知道金鑰無法把別人踢下線；席位文件的 id 是金鑰的 SHA-256，金鑰本身不會出現在 Firestore 路徑或 log 裡；裝置識別碼也只存雜湊。
 - App Check 驗的是「請求來自這個網站」，不是「這個人是誰」，所以它是**額外一層**：`/order` 與 `/download` 仍然要 `accessToken`、`/lookup` 與 `/verify` 仍然有 IP 次數上限，這些都沒有因為 App Check 而放寬。
-- 程式檔案不對外公開：Storage 物件不需要（也不該）設成公開，一律由 `/download` 驗過授權才串出去。
+- 程式檔案與使用手冊都不對外公開：Storage 物件不需要（也不該）設成公開，一律由 `/download` 驗過授權才給短效簽章網址。

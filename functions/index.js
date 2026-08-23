@@ -142,11 +142,53 @@ function describeCallback(payload) {
   return summary;
 }
 
-// 程式壓縮檔在 Cloud Storage 的位置。/download 每次都即時讀這個物件，
+// 付費後可以拿到的檔案都在 Cloud Storage 上（bucket 見 MLEVEL_STORAGE_BUCKET）：
+// 安裝檔 mlevel.zip 與使用手冊.md。/download 每次都即時讀這些物件，
 // 所以要發布新版只要覆蓋它，不必改環境變數也不必重新部署 Functions。
 const STORAGE_BUCKET = (process.env.MLEVEL_STORAGE_BUCKET || '').trim();
-const DOWNLOAD_OBJECT = (process.env.MLEVEL_STORAGE_OBJECT || 'mlevel.zip').trim().replace(/^\/+/, '');
-const DOWNLOAD_FILENAME = DOWNLOAD_OBJECT.split('/').pop() || 'mlevel.zip';
+
+function storageObject(value, fallback) {
+  return (value || '').trim().replace(/^\/+/, '') || fallback;
+}
+
+// /download?file=<key>。key 只有這裡列的兩個值，使用者傳別的一律當 app 處理，
+// 不會變成「可以拿 query string 指定任意 Storage 路徑」的漏洞。
+const DOWNLOAD_FILES = {
+  app: {
+    object: storageObject(process.env.MLEVEL_STORAGE_OBJECT, 'mlevel.zip'),
+    label: '安裝檔',
+    asciiName: 'mlevel.zip',
+  },
+  manual: {
+    object: storageObject(process.env.MLEVEL_STORAGE_MANUAL_OBJECT, '使用手冊.md'),
+    label: '使用手冊',
+    asciiName: 'mlevel-manual.md',
+  },
+};
+const DEFAULT_DOWNLOAD_FILE = 'app';
+
+// 用 hasOwn 而不是 `key in DOWNLOAD_FILES`：後者連 constructor、toString 這些
+// 繼承來的屬性都算「有」，?file=constructor 就會拿到不是設定物件的東西。
+function isDownloadFile(key) {
+  return Object.prototype.hasOwnProperty.call(DOWNLOAD_FILES, key);
+}
+
+function downloadTarget(key) {
+  return isDownloadFile(key) ? DOWNLOAD_FILES[key] : DOWNLOAD_FILES[DEFAULT_DOWNLOAD_FILE];
+}
+
+/**
+ * Content-Disposition 的 header 值只能是 ASCII，而使用手冊的檔名是中文。
+ * 照 RFC 5987 同時給 ASCII 的退路檔名與 UTF-8 的真正檔名，
+ * 舊瀏覽器拿到 manual.md、其餘拿到「使用手冊.md」。
+ */
+function attachmentDisposition(target) {
+  const filename = target.object.split('/').pop() || target.asciiName;
+  const ascii = /^[\x20-\x7e]+$/.test(filename) && !/["\\]/.test(filename) ? filename : target.asciiName;
+
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
 // 簽章網址的有效期。夠久讓使用者按下下載、又短到轉貼出去很快就失效。
 const DOWNLOAD_URL_TTL_MS = 15 * 60 * 1000;
 
@@ -394,17 +436,21 @@ async function markOrderPaid(merchantTradeNo, payload) {
 /**
  * 下載一律走本服務的 /download，才能在每次下載時重新驗證授權，
  * 也讓 Storage 上換檔時不必更新任何設定或前端。
- * 推導不出 base URL 時才退回舊的固定連結。
+ * file 決定拿安裝檔還是使用手冊（見 DOWNLOAD_FILES）。
+ * 推導不出 base URL 時才退回舊的固定連結（那條只有安裝檔）。
  */
-function buildDownloadUrl(apiBaseUrl, data) {
+function buildDownloadUrl(apiBaseUrl, data, file = DEFAULT_DOWNLOAD_FILE) {
   if (!apiBaseUrl) {
-    return (process.env.MLEVEL_DOWNLOAD_URL || '').trim();
+    return file === DEFAULT_DOWNLOAD_FILE ? (process.env.MLEVEL_DOWNLOAD_URL || '').trim() : '';
   }
 
   const query = new URLSearchParams({
     orderId: data.orderId || '',
     token: data.accessToken || '',
   });
+  if (file !== DEFAULT_DOWNLOAD_FILE) {
+    query.set('file', file);
+  }
 
   return `${apiBaseUrl}/download?${query.toString()}`;
 }
@@ -452,13 +498,13 @@ function sendDownloadError(response, status, code, message) {
  * download token —— 那個 token 每次都即時從 metadata 讀，所以覆蓋檔案
  * 換版之後依然指向新檔。
  */
-async function resolveStorageDownloadUrl(file, metadata) {
+async function resolveStorageDownloadUrl(file, metadata, target) {
   try {
     const [signedUrl] = await file.getSignedUrl({
       version: 'v4',
       action: 'read',
       expires: Date.now() + DOWNLOAD_URL_TTL_MS,
-      responseDisposition: `attachment; filename="${DOWNLOAD_FILENAME}"`,
+      responseDisposition: attachmentDisposition(target),
     });
 
     return { url: signedUrl, kind: 'signed' };
@@ -534,7 +580,8 @@ function orderPublicView(data, apiBaseUrl = '') {
     licenseKey: paid ? data.licenseKey || '' : '',
     licenseExpiresAt: paid && expiresAt ? expiresAt.toISOString() : '',
     licenseExpired: expired,
-    downloadUrl: paid && !expired ? buildDownloadUrl(apiBaseUrl, data) : '',
+    downloadUrl: paid && !expired ? buildDownloadUrl(apiBaseUrl, data, 'app') : '',
+    manualUrl: paid && !expired ? buildDownloadUrl(apiBaseUrl, data, 'manual') : '',
     paidAt: paidAt ? paidAt.toISOString() : '',
   };
 }
@@ -1112,6 +1159,9 @@ exports.ecpayApi = onRequest(async (request, response) => {
     if ((request.method === 'GET' || request.method === 'HEAD') && path === '/download') {
       const orderId = typeof request.query.orderId === 'string' ? request.query.orderId.trim() : '';
       const token = typeof request.query.token === 'string' ? request.query.token.trim() : '';
+      const requestedFile = typeof request.query.file === 'string' ? request.query.file.trim() : '';
+      const fileKey = isDownloadFile(requestedFile) ? requestedFile : DEFAULT_DOWNLOAD_FILE;
+      const target = downloadTarget(fileKey);
 
       if (!ORDER_ID_PATTERN.test(orderId) || !token) {
         sendDownloadError(response, 400, 'MISSING_PARAMS', '下載連結不完整，請回到網站重新取得下載連結。');
@@ -1138,26 +1188,29 @@ exports.ecpayApi = onRequest(async (request, response) => {
       let file;
       let metadata;
       try {
-        file = admin.storage().bucket(STORAGE_BUCKET || undefined).file(DOWNLOAD_OBJECT);
+        file = admin.storage().bucket(STORAGE_BUCKET || undefined).file(target.object);
         const [exists] = await file.exists();
 
         if (!exists) {
-          // 檔案還沒放上 Storage 時，退回舊的固定下載連結（若有設定），不要讓已付款的人卡住
-          const fallback = (process.env.MLEVEL_DOWNLOAD_URL || '').trim();
+          // 安裝檔還沒放上 Storage 時，退回舊的固定下載連結（若有設定），不要讓已付款的人卡住。
+          // 使用手冊沒有這條退路，缺檔就照實說。
+          const fallback = fileKey === DEFAULT_DOWNLOAD_FILE
+            ? (process.env.MLEVEL_DOWNLOAD_URL || '').trim()
+            : '';
           if (fallback) {
             logger.warn('Download object missing, falling back to MLEVEL_DOWNLOAD_URL', {
-              object: DOWNLOAD_OBJECT,
+              object: target.object,
             });
             response.redirect(302, fallback);
             return;
           }
 
-          logger.error('Download object missing', { bucket: STORAGE_BUCKET, object: DOWNLOAD_OBJECT });
+          logger.error('Download object missing', { bucket: STORAGE_BUCKET, object: target.object });
           sendDownloadError(
             response,
             503,
             'OBJECT_MISSING',
-            `程式檔案還沒上架到 Storage（${DOWNLOAD_OBJECT}），請聯絡客服。`,
+            `${target.label}還沒上架到 Storage（${target.object}），請聯絡客服。`,
           );
           return;
         }
@@ -1167,17 +1220,17 @@ exports.ecpayApi = onRequest(async (request, response) => {
         // 最常見的是 Functions 的服務帳號沒有讀取 Storage 的權限
         logger.error('Storage read failed', {
           bucket: STORAGE_BUCKET,
-          object: DOWNLOAD_OBJECT,
+          object: target.object,
           message: error instanceof Error ? error.message : String(error),
         });
-        sendDownloadError(response, 502, 'STORAGE_UNAVAILABLE', '讀取程式檔案失敗，請聯絡客服。');
+        sendDownloadError(response, 502, 'STORAGE_UNAVAILABLE', `讀取${target.label}失敗，請聯絡客服。`);
         return;
       }
-      const { url: fileUrl, kind } = await resolveStorageDownloadUrl(file, metadata);
+      const { url: fileUrl, kind } = await resolveStorageDownloadUrl(file, metadata, target);
       if (!fileUrl) {
         logger.error('Cannot build a download URL for the object', {
           bucket: STORAGE_BUCKET,
-          object: DOWNLOAD_OBJECT,
+          object: target.object,
         });
         sendDownloadError(response, 502, 'NO_DOWNLOAD_URL', '產生下載網址失敗，請聯絡客服。');
         return;
@@ -1191,18 +1244,24 @@ exports.ecpayApi = onRequest(async (request, response) => {
         return;
       }
 
-      // 下載紀錄純粹是營運資訊，寫失敗不該影響下載本身
+      // 下載紀錄純粹是營運資訊，寫失敗不該影響下載本身。
+      // 安裝檔沿用原本的 downloadCount，使用手冊分開記，兩邊的數字才讀得懂。
       ref
         .set(
-          {
-            downloadCount: admin.firestore.FieldValue.increment(1),
-            lastDownloadAt: admin.firestore.FieldValue.serverTimestamp(),
-          },
+          fileKey === DEFAULT_DOWNLOAD_FILE
+            ? {
+                downloadCount: admin.firestore.FieldValue.increment(1),
+                lastDownloadAt: admin.firestore.FieldValue.serverTimestamp(),
+              }
+            : {
+                manualDownloadCount: admin.firestore.FieldValue.increment(1),
+                lastManualDownloadAt: admin.firestore.FieldValue.serverTimestamp(),
+              },
           { merge: true },
         )
         .catch((error) => logger.warn('Failed to record download', error));
 
-      logger.info('Download served', { orderId, object: DOWNLOAD_OBJECT, kind, size: metadata.size });
+      logger.info('Download served', { orderId, file: fileKey, object: target.object, kind, size: metadata.size });
       response.redirect(302, fileUrl);
       return;
     }

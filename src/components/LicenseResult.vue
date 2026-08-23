@@ -103,13 +103,16 @@ onUnmounted(() => {
           <div v-if="order.licenseExpiresAt"><dt>有效期限</dt><dd>{{ formatDate(order.licenseExpiresAt) }}</dd></div>
         </dl>
 
-        <a v-if="order.downloadUrl" class="download" :href="order.downloadUrl" rel="noopener">下載 MLevel</a>
+        <div v-if="order.downloadUrl" class="files">
+          <a class="download" :href="order.downloadUrl" rel="noopener">下載安裝檔（mlevel.zip）</a>
+          <a v-if="order.manualUrl" class="download secondary" :href="order.manualUrl" rel="noopener">下載使用手冊（使用手冊.md）</a>
+        </div>
         <p v-else-if="order.licenseExpired" class="desc expired">授權已到期，重新購買後即可再次下載。</p>
         <p v-else class="desc expired">下載連結尚未設定，請聯絡客服取得程式。</p>
 
         <p class="note">
-          請把金鑰保存好；首次啟動 MLevel 時輸入它即可完成啟用。
-          之後隨時可以用「Email + 金鑰」在網站上的「找回授權」重新取得下載連結，下載到的一律是最新版。
+          請把金鑰保存好；解壓縮安裝檔後首次啟動 MLevel 時輸入它即可完成啟用，安裝與操作步驟都寫在使用手冊裡。
+          之後隨時可以用「Email + 金鑰」在網站上的「找回授權」重新取得這兩個下載連結，下載到的一律是最新版。
         </p>
       </template>
 
@@ -233,9 +236,9 @@ h3 { margin: 10px 0 16px; font-size: 24px; }
 .meta dt { color: var(--muted); flex: none; }
 .meta dd { margin: 0; text-align: right; word-break: break-all; }
 
+.files { margin-top: 24px; display: grid; gap: 10px; }
 .download {
   display: block;
-  margin-top: 24px;
   padding: 16px 24px;
   border-radius: 999px;
   text-align: center;
@@ -246,6 +249,17 @@ h3 { margin: 10px 0 16px; font-size: 24px; }
   background: linear-gradient(100deg, var(--brand-2), var(--brand));
   box-shadow: var(--shadow-brand);
 }
+/* 使用手冊是附帶檔案，樣式退一階，別跟安裝檔搶主要動作 */
+.download.secondary {
+  padding: 14px 24px;
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: none;
+}
+.download.secondary:hover { border-color: var(--brand); color: var(--brand-2); }
 
 .again {
   width: 100%;

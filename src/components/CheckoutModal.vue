@@ -106,6 +106,9 @@ const pay = async () => {
         <div class="m">💳 信用卡一次付清</div>
       </div>
 
+      <p class="note">
+        付款完成後，頁面上會直接給你授權金鑰，以及安裝檔（mlevel.zip）與使用手冊（使用手冊.md）的下載連結。
+      </p>
       <p class="note">付款由綠界科技 ECPay 處理，本站不會接觸到你的卡號。</p>
     </div>
   </div>
@@ -235,5 +238,6 @@ h3 { margin: 10px 0 20px; font-size: 24px; }
   font-weight: 500;
 }
 
-.note { margin-top: 16px; font-size: 12.5px; color: #7c88a3; }
+.note { margin-top: 16px; font-size: 12.5px; color: #7c88a3; line-height: 1.7; }
+.note + .note { margin-top: 8px; }
 </style>

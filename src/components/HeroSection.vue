@@ -33,7 +33,7 @@ const stats = [
           <span class="buy-main">立即購買</span>
           <span class="buy-price">NT$399 / 月</span>
         </button>
-        <p class="cta-note">信用卡一次付清｜付款完成後立即取得授權金鑰</p>
+        <p class="cta-note">信用卡一次付清｜付款完成後立即取得授權金鑰、安裝檔與使用手冊</p>
       </div>
 
       <!-- <ul class="badges">
