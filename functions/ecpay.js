@@ -25,10 +25,13 @@ const STAGE_HOST = 'payment-stage.ecpay.com.tw';
 /**
  * 讀取綠界設定。
  *
- * 測試環境（ECPAY_API_URL 指向 payment-stage）允許沿用綠界公開的測試特店，
- * 方便本機跑完整流程；但只要結帳網址是正式環境，就必須有自己的特店金鑰，
- * 否則直接拋錯 —— 用公開金鑰跑正式流量，等於任何人都能偽造付款回呼、
- * 自己發一組授權金鑰出來。
+ * HashKey/HashIV 是驗證付款回呼（CheckMacValue）的唯一憑據，所以「沿用綠界公開的
+ * 測試特店」必須是明確的選擇，不能是忘記設定的結果 —— 否則部署時少帶 functions/.env
+ * （這個檔案不進版控），線上服務就會靜默退回公開金鑰，任何人都能偽造 /notify
+ * 自己發一組授權金鑰出來，而且結帳頁還指向測試站、根本不收錢。
+ *
+ * 因此三個欄位一律必填；要用公開測試特店得設 ECPAY_ALLOW_PUBLIC_TEST_CREDENTIALS=true，
+ * 而且只有結帳網址指向 payment-stage 時才允許。
  */
 function getEcpayConfig() {
   const apiUrl = optionalEnv('ECPAY_API_URL') || DEFAULT_API_URL;
@@ -36,25 +39,45 @@ function getEcpayConfig() {
   const hashKey = optionalEnv('ECPAY_HASH_KEY');
   const hashIV = optionalEnv('ECPAY_HASH_IV');
   const isStage = apiUrl.includes(STAGE_HOST);
+  const allowPublicTest =
+    String(process.env.ECPAY_ALLOW_PUBLIC_TEST_CREDENTIALS || '').trim().toLowerCase() === 'true';
 
-  if (!isStage) {
-    if (!merchantId || !hashKey || !hashIV) {
+  // 自有金鑰絕不能跑在正式結帳網址以外，也不能是綠界公開的那幾組
+  if (!isStage && PUBLIC_TEST_HASH_KEYS.has(hashKey)) {
+    throw new Error(
+      'Refusing to use ECPay public test credentials against the production checkout URL.',
+    );
+  }
+
+  if (!merchantId || !hashKey || !hashIV) {
+    if (!allowPublicTest) {
       throw new Error(
-        'ECPAY_MERCHANT_ID / ECPAY_HASH_KEY / ECPAY_HASH_IV are required when ECPAY_API_URL points at production.',
+        'ECPAY_MERCHANT_ID / ECPAY_HASH_KEY / ECPAY_HASH_IV are required. ' +
+          'Set ECPAY_ALLOW_PUBLIC_TEST_CREDENTIALS=true to intentionally fall back to ECPay public test credentials (stage only).',
       );
     }
-    if (PUBLIC_TEST_HASH_KEYS.has(hashKey)) {
+    if (!isStage) {
       throw new Error(
-        'Refusing to use ECPay public test credentials against the production checkout URL.',
+        `Refusing to fall back to ECPay public test credentials: ECPAY_API_URL is not the stage checkout URL (${apiUrl}).`,
       );
     }
+
+    // 退回公開測試特店時三個值必須成套，不能把自有 MerchantID 配上公開 HashKey ——
+    // 那種組合簽出來的 CheckMacValue 兩邊都對不上，只會是難查的怪錯誤。
+    return {
+      apiUrl,
+      merchantId: DEFAULT_MERCHANT_ID,
+      hashKey: DEFAULT_HASH_KEY,
+      hashIV: DEFAULT_HASH_IV,
+      callbackBaseUrl: optionalEnv('ECPAY_CALLBACK_BASE_URL'),
+    };
   }
 
   return {
     apiUrl,
-    merchantId: merchantId || DEFAULT_MERCHANT_ID,
-    hashKey: hashKey || DEFAULT_HASH_KEY,
-    hashIV: hashIV || DEFAULT_HASH_IV,
+    merchantId,
+    hashKey,
+    hashIV,
     callbackBaseUrl: optionalEnv('ECPAY_CALLBACK_BASE_URL'),
   };
 }

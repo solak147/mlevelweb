@@ -113,6 +113,25 @@ onUnmounted(() => {
         </p>
       </template>
 
+      <!-- 綠界回報收款成功，但後端無法自動核對（金額不符、模擬付款、訂單對不上）。
+           款項可能已經請走了，所以這裡絕對不能說「不會向你收取任何費用」。 -->
+      <template v-else-if="status === 'review'">
+        <span class="eyebrow warn">Pending</span>
+        <h3>這筆付款需要人工確認</h3>
+        <p class="desc">
+          綠界回報交易已完成，但我們無法自動核對這筆訂單，所以授權還沒開通。
+          請把下面的訂單編號提供給客服，我們會盡快為你處理 —— 若款項確實已入帳，授權會補開通。
+        </p>
+
+        <dl class="meta">
+          <div><dt>訂單編號</dt><dd>{{ order ? order.orderId : orderId }}</dd></div>
+          <div v-if="order && order.amount"><dt>訂單金額</dt><dd>NT${{ order.amount }}</dd></div>
+        </dl>
+
+        <p v-if="error" class="error" role="alert">{{ error }}</p>
+        <button class="again" type="button" @click="emit('close')">回到首頁</button>
+      </template>
+
       <!-- 未完成 -->
       <template v-else>
         <span class="eyebrow fail">Incomplete</span>
@@ -160,6 +179,7 @@ onUnmounted(() => {
 .x:hover { color: var(--text); }
 
 .eyebrow.ok { color: var(--ok); }
+.eyebrow.warn { color: var(--brand-2); }
 .eyebrow.fail { color: #ff8a80; }
 
 h3 { margin: 10px 0 16px; font-size: 24px; }

@@ -116,6 +116,32 @@ function pickCallbackFields(payload) {
   return kept;
 }
 
+// 驗章失敗時可以安全記進 log 的欄位。這幾個是查問題真正需要的識別資訊，
+// 且都不是敏感的卡片資料。
+const CALLBACK_LOG_SAFE_FIELDS = ['MerchantID', 'MerchantTradeNo', 'TradeNo', 'RtnCode'];
+
+/**
+ * 把綠界回呼整理成「可以進 Cloud Logging」的摘要。
+ *
+ * 驗章失敗的回呼一樣可能帶 card6no（卡號前六碼）與 card4no（後四碼），所以整包丟進
+ * logger 就等於把卡片資訊留在 log 裡 —— 這正是 CALLBACK_FIELDS 那份白名單要避免的事。
+ * 這裡只記少數識別欄位的值，其餘一律「只記名稱、不記內容」；
+ * 而驗章失敗最常見的原因就是綠界多送了一個我們沒算進 CheckMacValue 的新欄位，
+ * 光看欄位名稱就查得出來。
+ */
+function describeCallback(payload) {
+  const summary = { fields: Object.keys(payload).sort() };
+
+  for (const key of CALLBACK_LOG_SAFE_FIELDS) {
+    const value = payload[key];
+    if (value !== undefined && value !== null) {
+      summary[key] = String(value).slice(0, 40);
+    }
+  }
+
+  return summary;
+}
+
 // 程式壓縮檔在 Cloud Storage 的位置。/download 每次都即時讀這個物件，
 // 所以要發布新版只要覆蓋它，不必改環境變數也不必重新部署 Functions。
 const STORAGE_BUCKET = (process.env.MLEVEL_STORAGE_BUCKET || '').trim();
@@ -306,6 +332,17 @@ async function markOrderPaid(merchantTradeNo, payload) {
     logger.error('Paid callback MerchantID mismatch', {
       merchantTradeNo,
       received: String(payload.MerchantID),
+    });
+    return null;
+  }
+
+  // SimulatePaid=1 是綠界廠商後台的「模擬付款」：回呼會用正式 HashKey 正確簽章、
+  // RtnCode 也是 1，但沒有實際請款。綠界文件明列這種回呼不得出貨／開通，
+  // 否則後台按一下就等於送出一組 30 天授權。缺這個欄位時不當成模擬付款。
+  if (String(payload.SimulatePaid ?? '') === '1') {
+    logger.error('Refusing to fulfil a simulated ECPay payment', {
+      merchantTradeNo,
+      tradeNo: typeof payload.TradeNo === 'string' ? payload.TradeNo : '',
     });
     return null;
   }
@@ -603,7 +640,7 @@ exports.ecpayApi = onRequest(async (request, response) => {
       const payload = request.body || {};
 
       if (!verifyEcpayCallback(payload)) {
-        logger.error('ECPay notify CheckMacValue verification failed', { payload });
+        logger.error('ECPay notify CheckMacValue verification failed', describeCallback(payload));
         response.status(400).send('0|CheckMacValue Error');
         return;
       }
@@ -628,15 +665,23 @@ exports.ecpayApi = onRequest(async (request, response) => {
       const merchantTradeNo = ORDER_ID_PATTERN.test(rawTradeNo) ? rawTradeNo : '';
       const rtnCode = Number(payload.RtnCode);
       const verified = verifyEcpayCallback(payload);
-      const status = verified && rtnCode === 1 ? 'success' : 'cancel';
+      const ecpaySucceeded = verified && rtnCode === 1;
+
+      // 「綠界說成功」不等於「我們可以開通」：markOrderPaid 會擋掉模擬付款、金額不符、
+      // 查無訂單這幾種情況。那時候款項可能已經請走了，所以不能沿用 cancel 的畫面
+      // （那頁寫的是「不會向你收取任何費用」）—— 要走 review 讓使用者拿訂單編號找客服。
+      //
+      // 綠界回報成功但訂單編號格式不合（下面的 merchantTradeNo 會是空字串）也算 review：
+      // 對方說收了錢，我們卻認不出是哪一筆，同樣需要人工處理。
+      let status = ecpaySucceeded ? 'review' : 'cancel';
 
       let redirectBaseUrl = '';
       let accessToken = '';
 
       if (merchantTradeNo) {
         // 冪等：若背景通知還沒進來，這裡也把成功訂單標記為已付款並發金鑰
-        if (status === 'success') {
-          await markOrderPaid(merchantTradeNo, payload);
+        if (ecpaySucceeded && (await markOrderPaid(merchantTradeNo, payload))) {
+          status = 'success';
         }
 
         const order = (await db.collection(ORDERS).doc(merchantTradeNo).get()).data();
@@ -667,7 +712,7 @@ exports.ecpayApi = onRequest(async (request, response) => {
         <html lang="zh-Hant">
           <head><meta charset="utf-8" /><title>綠界付款結果</title></head>
           <body style="font-family: sans-serif; padding: 24px;">
-            <h1>${status === 'success' ? '付款完成' : '付款未完成'}</h1>
+            <h1>${status === 'success' ? '付款完成' : status === 'review' ? '付款待人工確認' : '付款未完成'}</h1>
             <p>訂單編號：${escapeHtml(rawTradeNo || '-')}</p>
             <p>綠界訊息：${escapeHtml(typeof payload.RtnMsg === 'string' ? payload.RtnMsg : '-')}</p>
           </body>
