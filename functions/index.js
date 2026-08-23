@@ -41,12 +41,17 @@ const SESSIONS = 'mlevel_sessions';
 // 這樣使用者可以自由換電腦（不必解綁），但同一時間只會有一個工作階段成立。
 //
 // 兩個數字是在「被佔用時要等多久」和「自己當機後要等多久才能重開」之間取捨：
-// 心跳 3 分鐘一次、10 分鐘沒消息才放掉 —— 正常的網路抖動不會被踢掉，
-// 真的當機最多等 10 分鐘。Firestore 寫入量約每人每天 480 筆，成本可忽略。
-const SESSION_HEARTBEAT_SECONDS = 180;
-const SESSION_LEASE_MS = 10 * 60 * 1000;
+// 心跳 6 分鐘一次、15 分鐘沒消息才放掉 —— 真的當機最多等 15 分鐘。
+// Firestore 寫入量約每人每天 240 筆，成本可忽略。
+//
+// 租約留了 2.5 倍心跳的餘裕，所以掉一次心跳（下一次是 12 分鐘後）還在租約內，
+// 網路抖動不會讓席位變成可被接手；連掉兩次就會出現一段「自己還在跑、但別人不用
+// force 就能接手」的空窗，客戶端心跳失敗時仍應盡快重試，不要等到下一輪。
+const SESSION_HEARTBEAT_SECONDS = 360;
+const SESSION_LEASE_MS = 15 * 60 * 1000;
 // 心跳比這個間隔還密就不寫入（仍回 ok）。省成本，也順手擋掉狂打心跳的客戶端。
-const SESSION_HEARTBEAT_MIN_WRITE_MS = 30 * 1000;
+// 上限是「心跳間隔 + 這個值 < 租約」，否則正常續租也會被判離線。
+const SESSION_HEARTBEAT_MIN_WRITE_MS = 300 * 1000;
 // 剛被強制接手的席位有一段冷卻時間，免得兩個人互踢來互踢去、變成勉強可用的共用。
 const SESSION_TAKEOVER_COOLDOWN_MS = 2 * 60 * 1000;
 
@@ -125,6 +130,10 @@ const LOOKUP_WINDOW_MS = 60 * 1000;
 const LOOKUP_MAX_ATTEMPTS = 10;
 // 程式每次啟動都會打一次 /verify，而網咖／宿舍會共用出口 IP，所以這裡放寬一些。
 const VERIFY_MAX_ATTEMPTS = 30;
+// 同一把金鑰的啟用紀錄最密就寫這麼一次（仍照樣回驗證結果）。限流計數只在單一實例的
+// 記憶體裡、又有 maxInstances，光靠它擋不住有人一直打 /verify 燒 Firestore 寫入；
+// 這道節流是以訂單自己的 lastVerifyAt 為準，跨實例都算得準。
+const VERIFY_MIN_WRITE_MS = 60 * 1000;
 const LOOKUP_TRACKED_IPS = 500;
 const lookupAttempts = new Map();
 const verifyAttempts = new Map();
@@ -784,7 +793,8 @@ exports.ecpayApi = onRequest(async (request, response) => {
         return;
       }
 
-      const expiresAt = readExpiresAt(hit.data());
+      const order = hit.data();
+      const expiresAt = readExpiresAt(order);
       const expired = expiresAt ? expiresAt.getTime() <= Date.now() : false;
 
       if (expired) {
@@ -798,16 +808,21 @@ exports.ecpayApi = onRequest(async (request, response) => {
         return;
       }
 
-      // 啟用紀錄純粹是營運資訊（有沒有人在用、多久開一次），寫失敗不該擋住啟動
-      hit.ref
-        .set(
-          {
-            verifyCount: admin.firestore.FieldValue.increment(1),
-            lastVerifyAt: admin.firestore.FieldValue.serverTimestamp(),
-          },
-          { merge: true },
-        )
-        .catch((error) => logger.warn('Failed to record verify', error));
+      // 啟用紀錄純粹是營運資訊（有沒有人在用、多久開一次），寫失敗不該擋住啟動。
+      // VERIFY_MIN_WRITE_MS 內重複驗證就不寫 —— 正常啟動只會打一次，被節流掉的都是
+      // 重試或惡意連打，所以 verifyCount 記的是「啟動次數」而不是「請求次數」。
+      const lastVerify = toDateOrNull(order.lastVerifyAt);
+      if (!lastVerify || Date.now() - lastVerify.getTime() >= VERIFY_MIN_WRITE_MS) {
+        hit.ref
+          .set(
+            {
+              verifyCount: admin.firestore.FieldValue.increment(1),
+              lastVerifyAt: admin.firestore.FieldValue.serverTimestamp(),
+            },
+            { merge: true },
+          )
+          .catch((error) => logger.warn('Failed to record verify', error));
+      }
 
       response.status(200).json({
         ok: true,
